@@ -711,10 +711,15 @@ Use the lookup_npi tool to retrieve this information."""
 # ============================================================================
 
 # Apply Okta authentication middleware if enabled
-if OKTA_ENABLED:
+if OKTA_ENABLED and OktaAuthMiddleware is not None:
     logger.info("Applying Okta authentication middleware...")
-    app = mcp.sse_app()
-    app.add_middleware(OktaAuthMiddleware, public_paths=["/", "/health", "/metrics"])
+    try:
+        app = mcp.sse_app()
+        app.add_middleware(OktaAuthMiddleware, public_paths=["/", "/health", "/metrics"])
+        logger.info("Okta authentication middleware applied successfully")
+    except Exception as e:
+        logger.error(f"Failed to apply Okta middleware: {e}")
+        OKTA_ENABLED = False
 
     # Apply role-based access control to tools
     # Echo tool - available to all authenticated users (no restriction needed)
@@ -732,7 +737,8 @@ if OKTA_ENABLED:
         advanced_tool.canAccess = require_role("mcp_analyst", "mcp_clinician", "mcp_admin")
         logger.info("RBAC applied to tool: advanced_search (requires: analyst, clinician, or admin)")
 
-    logger.info("Okta RBAC configuration complete")
+    if OKTA_ENABLED:
+        logger.info("Okta RBAC configuration complete")
 else:
     logger.warning("Running without authentication - suitable for development only!")
 
