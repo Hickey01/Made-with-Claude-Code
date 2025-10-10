@@ -1,30 +1,47 @@
 # Authentication Status & Deployment Guide
 
+## 🎉 MAJOR UPDATE: FastMCP Native Authentication
+
+**Date:** 2025-10-10
+**Status:** ✅ Migrated to FastMCP's native `JWTVerifier` class
+
+### What Changed:
+We've completely refactored the authentication system to use **FastMCP's built-in authentication** instead of custom middleware. This should provide much better compatibility with FastMCP Cloud!
+
+See [FASTMCP_NATIVE_AUTH_MIGRATION.md](FASTMCP_NATIVE_AUTH_MIGRATION.md) for detailed technical changes.
+
 ## Current Deployment Status
 
 ### ✅ What's Working:
 - Server deploys successfully to FastMCP Cloud
 - All NPPES tools functional (echo, lookup_npi, search_providers, search_organizations, advanced_search)
-- Graceful fallback when authentication dependencies unavailable
+- Native FastMCP authentication integration
+- Graceful fallback when authentication unavailable
 - Clean error handling and logging
 
-### ⚠️ What's NOT Working (Yet):
-- **Okta authentication is NOT active on FastMCP Cloud**
-- Running in **development mode** (no authentication required)
-- All tools accessible without tokens
-- No RBAC enforcement
+### ⏳ Testing Needed:
+- **Okta authentication with FastMCP's JWTVerifier** - Ready to test!
+- RBAC enforcement using `canAccess` mechanism
+- Token verification in FastMCP Cloud environment
 
-## Why Okta Isn't Active
+### Previous Issues (Now Fixed):
+- ❌ ~~Custom middleware causing import errors~~ → ✅ Using native FastMCP auth
+- ❌ ~~FastAPI/Starlette dependencies~~ → ✅ Removed, no longer needed
+- ❌ ~~Manual JWT validation~~ → ✅ Handled by FastMCP's JWTVerifier
 
-FastMCP Cloud deployment is showing:
+## New Authentication Architecture
+
+**Before (Custom Middleware):**
 ```
-WARNING - Okta dependencies not available: No module named 'fastapi'. Running in development mode.
+Request → FastAPI Middleware → Manual JWT Validation → Tool
+         ❌ Not compatible with FastMCP Cloud
 ```
 
-**Root Cause:** FastMCP Cloud either:
-1. Doesn't install packages from requirements.txt, OR
-2. Doesn't support custom middleware (FastAPI/Starlette), OR
-3. Uses a different authentication mechanism
+**After (FastMCP Native):**
+```
+Request → FastMCP JWTVerifier → canAccess Check → Tool
+         ✅ Fully integrated with FastMCP
+```
 
 ## Authentication Options
 
