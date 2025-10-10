@@ -17,10 +17,13 @@ import logging
 from typing import Optional, Dict, Any, List, Callable
 from fastmcp import FastMCP
 import httpx
-from dotenv import load_dotenv
 
-# Load environment variables
-load_dotenv()
+# Load environment variables (optional - uses system env if not available)
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass  # dotenv not available, will use system environment variables
 
 # Configure logging
 logging.basicConfig(
@@ -224,67 +227,72 @@ def require_role(*allowed_roles: str) -> Callable:
     return check_access
 
 
-class OktaAuthMiddleware(BaseHTTPMiddleware):
-    """Middleware to validate Okta tokens on all requests."""
+# Only define middleware if dependencies are available
+if OKTA_DEPS_AVAILABLE:
+    class OktaAuthMiddleware(BaseHTTPMiddleware):
+        """Middleware to validate Okta tokens on all requests."""
 
-    def __init__(self, app, public_paths: Optional[List[str]] = None):
-        super().__init__(app)
-        self.public_paths = public_paths or ["/", "/health", "/metrics", "/.well-known"]
+        def __init__(self, app, public_paths: Optional[List[str]] = None):
+            super().__init__(app)
+            self.public_paths = public_paths or ["/", "/health", "/metrics", "/.well-known"]
 
-    async def dispatch(self, request: Request, call_next):
-        # Skip authentication for public paths
-        if any(request.url.path.startswith(path) for path in self.public_paths):
+        async def dispatch(self, request: Request, call_next):
+            # Skip authentication for public paths
+            if any(request.url.path.startswith(path) for path in self.public_paths):
+                return await call_next(request)
+
+            # If Okta not configured, allow all requests (dev mode)
+            if not okta_config.is_configured:
+                logger.debug("Okta not configured - allowing unauthenticated request")
+                request.state.user = {"sub": "dev-user", "email": "dev@localhost", "groups": ["mcp_admin"]}
+                request.state.authenticated = False
+                return await call_next(request)
+
+            # Extract Authorization header
+            auth_header = request.headers.get("Authorization", "")
+
+            if not auth_header.startswith("Bearer "):
+                raise HTTPException(
+                    status_code=401,
+                    detail="Missing or invalid Authorization header",
+                    headers={"WWW-Authenticate": "Bearer"}
+                )
+
+            token = auth_header.replace("Bearer ", "")
+
+            try:
+                # Validate token
+                claims = await validate_okta_token(token)
+
+                # Attach user info to request state
+                request.state.user = claims
+                request.state.user_id = claims.get('sub')
+                request.state.email = claims.get('email', '')
+                request.state.groups = claims.get('groups', [])
+                request.state.scopes = claims.get('scp', [])
+                request.state.permissions = get_user_permissions(claims.get('groups', []))
+                request.state.authenticated = True
+
+                logger.debug(f"Request authenticated: user={claims.get('sub')}, groups={claims.get('groups', [])}")
+
+            except AuthenticationError as e:
+                security_logger.warning(f"Authentication failed: {e}")
+                raise HTTPException(
+                    status_code=401,
+                    detail=str(e),
+                    headers={"WWW-Authenticate": f'Bearer error="invalid_token", error_description="{e}"'}
+                )
+            except Exception as e:
+                logger.exception(f"Authentication middleware error: {e}")
+                raise HTTPException(
+                    status_code=500,
+                    detail="Internal authentication error"
+                )
+
             return await call_next(request)
-
-        # If Okta not configured, allow all requests (dev mode)
-        if not okta_config.is_configured:
-            logger.debug("Okta not configured - allowing unauthenticated request")
-            request.state.user = {"sub": "dev-user", "email": "dev@localhost", "groups": ["mcp_admin"]}
-            request.state.authenticated = False
-            return await call_next(request)
-
-        # Extract Authorization header
-        auth_header = request.headers.get("Authorization", "")
-
-        if not auth_header.startswith("Bearer "):
-            raise HTTPException(
-                status_code=401,
-                detail="Missing or invalid Authorization header",
-                headers={"WWW-Authenticate": "Bearer"}
-            )
-
-        token = auth_header.replace("Bearer ", "")
-
-        try:
-            # Validate token
-            claims = await validate_okta_token(token)
-
-            # Attach user info to request state
-            request.state.user = claims
-            request.state.user_id = claims.get('sub')
-            request.state.email = claims.get('email', '')
-            request.state.groups = claims.get('groups', [])
-            request.state.scopes = claims.get('scp', [])
-            request.state.permissions = get_user_permissions(claims.get('groups', []))
-            request.state.authenticated = True
-
-            logger.debug(f"Request authenticated: user={claims.get('sub')}, groups={claims.get('groups', [])}")
-
-        except AuthenticationError as e:
-            security_logger.warning(f"Authentication failed: {e}")
-            raise HTTPException(
-                status_code=401,
-                detail=str(e),
-                headers={"WWW-Authenticate": f'Bearer error="invalid_token", error_description="{e}"'}
-            )
-        except Exception as e:
-            logger.exception(f"Authentication middleware error: {e}")
-            raise HTTPException(
-                status_code=500,
-                detail="Internal authentication error"
-            )
-
-        return await call_next(request)
+else:
+    # Dummy middleware class when dependencies not available
+    OktaAuthMiddleware = None
 
 
 # ============================================================================
