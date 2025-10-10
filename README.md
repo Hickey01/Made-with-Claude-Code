@@ -4,39 +4,27 @@ A collection of FastMCP servers built with the help of Claude Code, demonstratin
 
 ## What's Inside
 
-This repository contains FastMCP servers for echo testing and comprehensive healthcare provider data access:
+This repository contains a combined FastMCP server for echo testing and comprehensive healthcare provider data access:
 
-### 1. Echo Server (`echo.py`)
-A simple demonstration server that showcases the basic capabilities of FastMCP:
-- **Echo Tool**: Returns any text you send to it
-- **Static Resource**: Provides a static "Echo!" message at `echo://static`
-- **Template Resource**: Dynamic echoing using URL templates `echo://{text}`
-- **Echo Prompt**: A basic prompt that returns your input text
-
-Perfect for testing MCP integrations and understanding the FastMCP framework.
-
-### 2. Multi-Tool Server (`multi_tool.py`) ⭐ **RECOMMENDED**
-A comprehensive healthcare provider lookup system with **COMPLETE DATA ACCESS** to all NPPES fields. This server combines echo functionality with full National Plan and Provider Enumeration System (NPPES) NPI Registry API access:
+### Combined Server (`combined_server.py`) ⭐ **MAIN SERVER**
+A comprehensive server that combines echo functionality with full National Plan and Provider Enumeration System (NPPES) NPI Registry API access:
 
 #### Echo Tools
 - `echo_tool(text)` - Simple echo for testing
 - Echo resources at `echo://static` and `echo://{text}`
 - Echo prompt support
 
-#### NPPES Tools with COMPLETE Data Access
+#### NPPES Tools
 - `lookup_npi(npi_number)` - Look up a provider by their 10-digit NPI number
 - `search_providers()` - Search for individual healthcare providers (NPI-1) by name and location
 - `search_organizations()` - Search for healthcare organizations (NPI-2)
 - `advanced_search()` - Multi-criteria search with taxonomy/specialty filtering
 
-**All tools return COMPLETE provider information including:**
-- ✅ Basic Information (names, credentials, gender, enumeration dates)
-- ✅ All Addresses (practice locations, mailing addresses, phone/fax)
-- ✅ All Taxonomies/Specialties (codes, descriptions, state licenses)
-- ✅ All Identifiers (state licenses, DEA numbers, etc.)
-- ✅ Practice Locations (complete location details)
-- ✅ Electronic Endpoints (FHIR, Direct messaging, etc.)
-- ✅ Other Names/Aliases (DBAs, former names)
+**Provider information includes:**
+- Basic Information (names, credentials, enumeration dates)
+- Addresses (practice locations, mailing addresses)
+- Taxonomies/Specialties (primary specialty and descriptions)
+- Contact information (phone/fax)
 
 #### Resources
 - `npi://{npi_number}` - Direct access to provider information
@@ -62,81 +50,46 @@ cd Made-with-Claude-Code
 pip install -r requirements.txt
 ```
 
-### Running the Servers
+### Running the Server
 
-**Multi-Tool Server (Recommended):**
-```bash
-fastmcp run multi_tool.py
-```
-
-**Simple Echo Server:**
-```bash
-fastmcp run echo.py
-```
-
-**Legacy NPPES Server:**
-```bash
-fastmcp run nppes_server.py
-```
-
-**Legacy Combined Server:**
 ```bash
 fastmcp run combined_server.py
 ```
 
 ### Usage Examples
 
-#### Multi-Tool Server Examples
 ```python
 # Test echo functionality
 echo_tool("Hello, FastMCP!")
 # Returns: "Hello, FastMCP!"
 
-# Look up a specific NPI with COMPLETE details
+# Look up a specific NPI
 lookup_npi("1234567890")
-# Returns: ALL fields including addresses, taxonomies, identifiers, endpoints, etc.
+# Returns: Provider details including name, address, specialty
 
-# Search for providers with full data
+# Search for providers
 search_providers(last_name="Smith", state="CA", limit=5)
-# Returns: Complete information for each matching provider
+# Returns: List of matching providers
 
-# Search for organizations with full data
+# Search for organizations
 search_organizations(organization_name="Mayo Clinic", state="MN")
-# Returns: Complete organization details including all locations and endpoints
+# Returns: Organization details
 
-# Advanced search with specialty - full details returned
+# Advanced search with specialty
 advanced_search(taxonomy_description="Cardiology", state="NY", limit=10)
-# Returns: Comprehensive data for all matching cardiologists
+# Returns: Matching cardiologists in New York
 ```
 
 ## Deployment
 
-All servers are ready for deployment to FastMCP Cloud:
+This server is ready for deployment to FastMCP Cloud:
 
 ### Quick Deployment Steps
-1. Push this repository to GitHub
-2. Create a [FastMCP Cloud account](http://fastmcp.cloud/signup)
-3. Connect your GitHub account
-4. Select this repository
-5. Choose which server to deploy (recommended: `multi_tool.py`)
-
-### GitHub Setup
-```bash
-# Initialize git repository (if not already done)
-git init
-
-# Add all files
-git add .
-
-# Commit
-git commit -m "Initial commit: Multi-tool server with complete NPPES data access"
-
-# Add your GitHub remote
-git remote add origin https://github.com/YOUR_USERNAME/YOUR_REPO_NAME.git
-
-# Push to GitHub
-git push -u origin main
-```
+1. Create a [FastMCP Cloud account](http://fastmcp.cloud/signup)
+2. Connect your GitHub account
+3. Select this repository: `Hickey01/Made-with-Claude-Code`
+4. Set entry point to: `combined_server.py` or `combined_server:mcp`
+5. Deploy!
 
 ## Dependencies
 
