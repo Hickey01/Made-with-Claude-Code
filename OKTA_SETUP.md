@@ -2,6 +2,8 @@
 
 This guide explains how to configure Okta authentication and role-based access control (RBAC) for the CHG Healthcare MCP Server.
 
+**🏢 Enterprise SSO Setup:** This guide focuses on configuring **individual user authentication** where each CHG employee logs in with their own Okta credentials. This is the recommended approach for enterprise deployment.
+
 **✨ Single-File Architecture:** All authentication and RBAC code is built into `combined_server.py` - no separate modules or dependencies required! The server automatically enables Okta when configured, or runs in development mode when not configured.
 
 ## Table of Contents
@@ -63,32 +65,64 @@ This guide explains how to configure Okta authentication and role-based access c
    - **mcp_admin**: Full administrative access
 3. Assign users to appropriate groups
 
-### Step 5: Create an Application
+### Step 5: Create an Application (IMPORTANT - Web Application for Enterprise)
 
-For server-to-server authentication (Client Credentials flow):
+**⚠️ IMPORTANT FOR CHG:** Use **Web Application** for enterprise deployment, not API Services!
+
+#### Option A: Web Application (RECOMMENDED for CHG Enterprise)
+
+This allows individual CHG employees to authenticate with SSO:
+
+1. Navigate to **Applications → Applications**
+2. Click **Create App Integration**
+3. Select:
+   - **Sign-in method**: **OIDC - OpenID Connect**
+   - **Application type**: **Web Application**
+4. Configure:
+   - **App integration name**: `CHG MCP Server`
+   - **Grant type**:
+     - ✅ Authorization Code
+     - ✅ Refresh Token
+     - ✅ Implicit (Hybrid) - optional for web UI
+   - **Sign-in redirect URIs**:
+     - `https://mcp.chghealthcare.com/callback` (production)
+     - `http://localhost:8080/callback` (local dev)
+     - `claudedesktop://callback` (if using Claude Desktop)
+   - **Sign-out redirect URIs**:
+     - `https://mcp.chghealthcare.com/logout`
+   - **Controlled Access**:
+     - Select groups that can access (e.g., Engineering, Analytics)
+     - OR allow all CHG users (control access via mcp_* groups instead)
+5. **Enable Proof Key for Code Exchange (PKCE)** - for enhanced security
+6. Click **Save**
+7. Note the **Client ID** (you'll need this)
+8. Note the **Client Secret** (only if your integration requires it)
+
+**Benefits:**
+- ✅ Each user logs in individually
+- ✅ User's actual Okta groups used for RBAC
+- ✅ Full audit trail of who accessed what
+- ✅ MFA support
+- ✅ Token refresh for long sessions
+
+#### Option B: API Services (FOR TESTING ONLY - Not Recommended)
+
+For development/testing with service account:
 
 1. Navigate to **Applications → Applications**
 2. Click **Create App Integration**
 3. Select:
    - **Sign-in method**: API Services (OAuth 2.0 client credentials)
 4. Configure:
-   - **App integration name**: `MCP Server`
+   - **App integration name**: `MCP Server Dev`
 5. Click **Save**
 6. Note the **Client ID** and **Client Secret**
 
-For user authentication (Authorization Code + PKCE flow):
-
-1. Create App Integration
-2. Select:
-   - **Sign-in method**: OIDC - OpenID Connect
-   - **Application type**: Web Application
-3. Configure:
-   - **App integration name**: `MCP Web Client`
-   - **Grant type**: Authorization Code, Refresh Token
-   - **Sign-in redirect URIs**: `http://localhost:8000/callback` (for dev)
-   - **Sign-out redirect URIs**: `http://localhost:8000/logout`
-4. Enable **Proof Key for Code Exchange (PKCE)**
-5. Click **Save**
+**⚠️ LIMITATIONS:**
+- ❌ Shared service account (all users appear as one)
+- ❌ Cannot track individual user activity
+- ❌ Not suitable for production/enterprise use
+- ✅ OK for local development and testing
 
 ### Step 6: Assign Application to Authorization Server
 
