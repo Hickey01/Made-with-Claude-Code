@@ -71,8 +71,9 @@ ROLE_DEFINITIONS = {
         "allowed_tools": ["echo_tool", "search_providers", "search_organizations", "lookup_npi"]
     },
     "mcp_analyst": {
-        "description": "Data analyst access with advanced search",
-        "allowed_tools": ["echo_tool", "search_providers", "search_organizations", "lookup_npi", "advanced_search"]
+        "description": "Data analyst access with advanced search and Tableau",
+        "allowed_tools": ["echo_tool", "search_providers", "search_organizations", "lookup_npi", "advanced_search",
+                          "list_tableau_workbooks", "query_tableau_view", "get_tableau_datasource"]
     },
     "mcp_clinician": {
         "description": "Healthcare provider access",
@@ -174,7 +175,7 @@ def require_role(*allowed_roles: str) -> Callable:
 # Create server with JWT verifier if available
 if jwt_verifier:
     mcp = FastMCP(
-        "CHG Healthcare Echo & NPPES Combined Server",
+        "CHG Healthcare Multi-Tool Server (Echo, NPPES, Tableau)",
         token_verifier=jwt_verifier
     )
     logger.info("✅ Okta authentication ENABLED - JWT verifier active")
@@ -182,7 +183,7 @@ if jwt_verifier:
     logger.info(f"   Audience: {okta_config.audience}")
     OKTA_ENABLED = True
 else:
-    mcp = FastMCP("CHG Healthcare Echo & NPPES Combined Server")
+    mcp = FastMCP("CHG Healthcare Multi-Tool Server (Echo, NPPES, Tableau)")
     logger.warning("⚠️  Okta authentication NOT configured - running in development mode")
     logger.warning("   All tools accessible without authentication")
     OKTA_ENABLED = False
@@ -496,6 +497,284 @@ async def advanced_search(
 
 
 # ============================================================================
+# TABLEAU INTEGRATION
+# ============================================================================
+
+# Tableau configuration (optional - for demo purposes)
+try:
+    import tableauserverclient as TSC
+    TABLEAU_AVAILABLE = True
+except ImportError:
+    logger.warning("tableauserverclient not available. Tableau tools will return mock data.")
+    TABLEAU_AVAILABLE = False
+
+
+class TableauConfig:
+    """Tableau Server configuration"""
+    def __init__(self):
+        self.server_url = os.getenv('TABLEAU_SERVER_URL')
+        self.site_id = os.getenv('TABLEAU_SITE_ID', '')
+        self.token_name = os.getenv('TABLEAU_TOKEN_NAME')
+        self.token_value = os.getenv('TABLEAU_TOKEN_VALUE')
+        self.username = os.getenv('TABLEAU_USERNAME')
+        self.password = os.getenv('TABLEAU_PASSWORD')
+
+    @property
+    def is_configured(self) -> bool:
+        """Check if Tableau is properly configured."""
+        has_server = bool(self.server_url)
+        has_auth = bool((self.token_name and self.token_value) or (self.username and self.password))
+        return has_server and has_auth and TABLEAU_AVAILABLE
+
+
+# Global Tableau config
+tableau_config = TableauConfig()
+
+
+def get_tableau_server():
+    """Get authenticated Tableau Server connection."""
+    if not tableau_config.is_configured:
+        raise Exception("Tableau not configured. Set TABLEAU_SERVER_URL and authentication credentials.")
+
+    server = TSC.Server(tableau_config.server_url, use_server_version=True)
+
+    # Authenticate with token or username/password
+    if tableau_config.token_name and tableau_config.token_value:
+        auth = TSC.PersonalAccessTokenAuth(
+            tableau_config.token_name,
+            tableau_config.token_value,
+            tableau_config.site_id
+        )
+    else:
+        auth = TSC.TableauAuth(
+            tableau_config.username,
+            tableau_config.password,
+            tableau_config.site_id
+        )
+
+    server.auth.sign_in(auth)
+    return server
+
+
+@mcp.tool()
+async def list_tableau_workbooks(limit: int = 20) -> str:
+    """
+    List Tableau workbooks available on the server.
+
+    Requires: mcp_analyst, mcp_admin roles
+
+    Args:
+        limit: Maximum number of workbooks to return (default 20)
+
+    Returns:
+        List of workbooks with names, projects, and view counts
+    """
+    if not tableau_config.is_configured:
+        # Return mock data for demo
+        return """Tableau Workbooks (Demo Mode - Tableau not configured):
+
+--- Workbook 1 ---
+Name: Healthcare Analytics Dashboard
+Project: Executive Reports
+Views: 12
+Owner: analytics-team
+Created: 2024-01-15
+URL: https://tableau.example.com/workbooks/healthcare-analytics
+
+--- Workbook 2 ---
+Name: Provider Performance Metrics
+Project: Operations
+Views: 8
+Owner: ops-team
+Created: 2024-02-20
+URL: https://tableau.example.com/workbooks/provider-performance
+
+--- Workbook 3 ---
+Name: Financial Summary Q1 2024
+Project: Finance
+Views: 5
+Owner: finance-team
+Created: 2024-03-10
+URL: https://tableau.example.com/workbooks/financial-summary
+
+ℹ️  To connect to real Tableau server, configure:
+   - TABLEAU_SERVER_URL
+   - TABLEAU_TOKEN_NAME and TABLEAU_TOKEN_VALUE
+   (or TABLEAU_USERNAME and TABLEAU_PASSWORD)
+"""
+
+    try:
+        server = get_tableau_server()
+        workbooks, pagination = server.workbooks.get()
+
+        output = [f"Found {pagination.total_available} Tableau workbooks:\n"]
+
+        for i, wb in enumerate(list(workbooks)[:limit], 1):
+            output.append(f"\n--- Workbook {i} ---")
+            output.append(f"Name: {wb.name}")
+            output.append(f"Project: {wb.project_name}")
+            output.append(f"Views: {len(list(server.workbooks.get_views(wb.id)))}")
+            output.append(f"Owner: {wb.owner_id}")
+            output.append(f"Created: {wb.created_at}")
+            output.append(f"URL: {wb.webpage_url}")
+
+        server.auth.sign_out()
+        return "\n".join(output)
+
+    except Exception as e:
+        logger.error(f"Tableau error: {e}")
+        return f"Error accessing Tableau: {str(e)}"
+
+
+@mcp.tool()
+async def query_tableau_view(
+    workbook_name: str,
+    view_name: str,
+    filters: Optional[str] = None
+) -> str:
+    """
+    Query a specific Tableau view/dashboard.
+
+    Requires: mcp_analyst, mcp_admin roles
+
+    Args:
+        workbook_name: Name of the workbook
+        view_name: Name of the view/dashboard within the workbook
+        filters: Optional filters in format "field1:value1,field2:value2"
+
+    Returns:
+        View details and data summary
+    """
+    if not tableau_config.is_configured:
+        # Return mock data for demo
+        return f"""Tableau View Query (Demo Mode):
+
+Workbook: {workbook_name}
+View: {view_name}
+Filters: {filters or 'None'}
+
+Mock Results:
+- Total Records: 1,247
+- Date Range: 2024-01-01 to 2024-03-31
+- Regions: West (42%), East (31%), Central (27%)
+- Top Metric: $2.3M revenue
+
+ℹ️  To query real Tableau data, configure Tableau server credentials.
+"""
+
+    try:
+        server = get_tableau_server()
+
+        # Find the workbook
+        req_option = TSC.RequestOptions()
+        req_option.filter.add(TSC.Filter(TSC.RequestOptions.Field.Name,
+                                        TSC.RequestOptions.Operator.Equals,
+                                        workbook_name))
+        workbooks, _ = server.workbooks.get(req_option)
+
+        if not workbooks:
+            return f"Workbook '{workbook_name}' not found"
+
+        workbook = workbooks[0]
+
+        # Get views in the workbook
+        server.workbooks.populate_views(workbook)
+        views = [v for v in workbook.views if v.name == view_name]
+
+        if not views:
+            return f"View '{view_name}' not found in workbook '{workbook_name}'"
+
+        view = views[0]
+
+        # Build output
+        output = [f"Tableau View: {view.name}"]
+        output.append(f"Workbook: {workbook.name}")
+        output.append(f"URL: {view.webpage_url}")
+        output.append(f"ID: {view.id}")
+        if filters:
+            output.append(f"Filters: {filters}")
+
+        # Note: Actual data extraction requires Tableau's REST API or Hyper API
+        output.append("\nℹ️  Use Tableau's web interface to view full data and visualizations")
+
+        server.auth.sign_out()
+        return "\n".join(output)
+
+    except Exception as e:
+        logger.error(f"Tableau error: {e}")
+        return f"Error querying Tableau view: {str(e)}"
+
+
+@mcp.tool()
+async def get_tableau_datasource(datasource_name: str) -> str:
+    """
+    Get information about a Tableau data source.
+
+    Requires: mcp_analyst, mcp_admin roles
+
+    Args:
+        datasource_name: Name of the data source
+
+    Returns:
+        Data source details including connections, fields, and metadata
+    """
+    if not tableau_config.is_configured:
+        return f"""Tableau Data Source (Demo Mode):
+
+Name: {datasource_name}
+Type: Published Data Source
+Connection: Snowflake
+Database: PROD_ANALYTICS
+Schema: HEALTHCARE
+
+Fields:
+- patient_id (String)
+- provider_npi (String)
+- visit_date (Date)
+- diagnosis_code (String)
+- charge_amount (Number)
+- insurance_type (String)
+
+Last Updated: 2024-03-15 14:30:00
+Owner: data-team
+Certified: Yes
+
+ℹ️  Configure Tableau server to access real data sources.
+"""
+
+    try:
+        server = get_tableau_server()
+
+        req_option = TSC.RequestOptions()
+        req_option.filter.add(TSC.Filter(TSC.RequestOptions.Field.Name,
+                                        TSC.RequestOptions.Operator.Equals,
+                                        datasource_name))
+        datasources, _ = server.datasources.get(req_option)
+
+        if not datasources:
+            return f"Data source '{datasource_name}' not found"
+
+        ds = datasources[0]
+
+        output = [f"Tableau Data Source: {ds.name}"]
+        output.append(f"ID: {ds.id}")
+        output.append(f"Project: {ds.project_name}")
+        output.append(f"Type: {ds.datasource_type}")
+        output.append(f"Created: {ds.created_at}")
+        output.append(f"Updated: {ds.updated_at}")
+        output.append(f"Certified: {ds.certified}")
+        if ds.certification_note:
+            output.append(f"Certification Note: {ds.certification_note}")
+
+        server.auth.sign_out()
+        return "\n".join(output)
+
+    except Exception as e:
+        logger.error(f"Tableau error: {e}")
+        return f"Error getting data source: {str(e)}"
+
+
+# ============================================================================
 # RESOURCES
 # ============================================================================
 
@@ -605,6 +884,12 @@ if OKTA_ENABLED:
     # Advanced search - requires analyst role or higher
     advanced_search.canAccess = require_role("mcp_analyst", "mcp_clinician", "mcp_admin")
     logger.info("   ✓ advanced_search: analyst, clinician, or admin")
+
+    # Tableau tools - require analyst role or admin
+    list_tableau_workbooks.canAccess = require_role("mcp_analyst", "mcp_admin")
+    query_tableau_view.canAccess = require_role("mcp_analyst", "mcp_admin")
+    get_tableau_datasource.canAccess = require_role("mcp_analyst", "mcp_admin")
+    logger.info("   ✓ Tableau tools (list_tableau_workbooks, query_tableau_view, get_tableau_datasource): analyst or admin")
 
     logger.info("✅ RBAC configuration complete")
 else:
