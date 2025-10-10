@@ -745,7 +745,6 @@ else:
 # Log server configuration
 logger.info(f"Server name: {mcp.name}")
 logger.info(f"Okta enabled: {OKTA_ENABLED}")
-logger.info(f"Available tools: {len(mcp._tools)}")
 
 
 # ============================================================================
