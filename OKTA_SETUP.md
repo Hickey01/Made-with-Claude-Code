@@ -2,6 +2,8 @@
 
 This guide explains how to configure Okta authentication and role-based access control (RBAC) for the CHG Healthcare MCP Server.
 
+**✨ Single-File Architecture:** All authentication and RBAC code is built into `combined_server.py` - no separate modules or dependencies required! The server automatically enables Okta when configured, or runs in development mode when not configured.
+
 ## Table of Contents
 1. [Prerequisites](#prerequisites)
 2. [Okta Configuration](#okta-configuration)
