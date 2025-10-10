@@ -4,7 +4,7 @@ A collection of FastMCP servers built with the help of Claude Code, demonstratin
 
 ## What's Inside
 
-This repository contains two fully-functional FastMCP servers:
+This repository contains FastMCP servers for echo testing and comprehensive healthcare provider data access:
 
 ### 1. Echo Server (`echo.py`)
 A simple demonstration server that showcases the basic capabilities of FastMCP:
@@ -15,14 +15,28 @@ A simple demonstration server that showcases the basic capabilities of FastMCP:
 
 Perfect for testing MCP integrations and understanding the FastMCP framework.
 
-### 2. NPPES NPI Registry Server (`nppes_server.py`)
-A comprehensive healthcare provider lookup system that interfaces with the National Plan and Provider Enumeration System (NPPES) NPI Registry API:
+### 2. Multi-Tool Server (`multi_tool.py`) ⭐ **RECOMMENDED**
+A comprehensive healthcare provider lookup system with **COMPLETE DATA ACCESS** to all NPPES fields. This server combines echo functionality with full National Plan and Provider Enumeration System (NPPES) NPI Registry API access:
 
-#### Tools
+#### Echo Tools
+- `echo_tool(text)` - Simple echo for testing
+- Echo resources at `echo://static` and `echo://{text}`
+- Echo prompt support
+
+#### NPPES Tools with COMPLETE Data Access
 - `lookup_npi(npi_number)` - Look up a provider by their 10-digit NPI number
 - `search_providers()` - Search for individual healthcare providers (NPI-1) by name and location
 - `search_organizations()` - Search for healthcare organizations (NPI-2)
 - `advanced_search()` - Multi-criteria search with taxonomy/specialty filtering
+
+**All tools return COMPLETE provider information including:**
+- ✅ Basic Information (names, credentials, gender, enumeration dates)
+- ✅ All Addresses (practice locations, mailing addresses, phone/fax)
+- ✅ All Taxonomies/Specialties (codes, descriptions, state licenses)
+- ✅ All Identifiers (state licenses, DEA numbers, etc.)
+- ✅ Practice Locations (complete location details)
+- ✅ Electronic Endpoints (FHIR, Direct messaging, etc.)
+- ✅ Other Names/Aliases (DBAs, former names)
 
 #### Resources
 - `npi://{npi_number}` - Direct access to provider information
@@ -50,54 +64,84 @@ pip install -r requirements.txt
 
 ### Running the Servers
 
-**Echo Server:**
+**Multi-Tool Server (Recommended):**
+```bash
+fastmcp run multi_tool.py
+```
+
+**Simple Echo Server:**
 ```bash
 fastmcp run echo.py
 ```
 
-**NPPES NPI Registry Server:**
+**Legacy NPPES Server:**
 ```bash
 fastmcp run nppes_server.py
 ```
 
-### Usage Examples
-
-#### Echo Server
-```python
-# Use the echo tool
-echo_tool("Hello, FastMCP!")
-# Returns: "Hello, FastMCP!"
+**Legacy Combined Server:**
+```bash
+fastmcp run combined_server.py
 ```
 
-#### NPPES Server
+### Usage Examples
+
+#### Multi-Tool Server Examples
 ```python
-# Look up a specific NPI
+# Test echo functionality
+echo_tool("Hello, FastMCP!")
+# Returns: "Hello, FastMCP!"
+
+# Look up a specific NPI with COMPLETE details
 lookup_npi("1234567890")
+# Returns: ALL fields including addresses, taxonomies, identifiers, endpoints, etc.
 
-# Search for providers
+# Search for providers with full data
 search_providers(last_name="Smith", state="CA", limit=5)
+# Returns: Complete information for each matching provider
 
-# Search for organizations
+# Search for organizations with full data
 search_organizations(organization_name="Mayo Clinic", state="MN")
+# Returns: Complete organization details including all locations and endpoints
 
-# Advanced search with specialty
+# Advanced search with specialty - full details returned
 advanced_search(taxonomy_description="Cardiology", state="NY", limit=10)
+# Returns: Comprehensive data for all matching cardiologists
 ```
 
 ## Deployment
 
-Both servers are ready for deployment to FastMCP Cloud:
+All servers are ready for deployment to FastMCP Cloud:
 
-1. Create a [FastMCP Cloud account](http://fastmcp.cloud/signup)
-2. Connect your GitHub account
-3. Select this repository
-4. Choose which server to deploy (`echo.py` or `nppes_server.py`)
+### Quick Deployment Steps
+1. Push this repository to GitHub
+2. Create a [FastMCP Cloud account](http://fastmcp.cloud/signup)
+3. Connect your GitHub account
+4. Select this repository
+5. Choose which server to deploy (recommended: `multi_tool.py`)
+
+### GitHub Setup
+```bash
+# Initialize git repository (if not already done)
+git init
+
+# Add all files
+git add .
+
+# Commit
+git commit -m "Initial commit: Multi-tool server with complete NPPES data access"
+
+# Add your GitHub remote
+git remote add origin https://github.com/YOUR_USERNAME/YOUR_REPO_NAME.git
+
+# Push to GitHub
+git push -u origin main
+```
 
 ## Dependencies
 
-- `fastmcp` - The FastMCP framework
-- `httpx` - Async HTTP client for API requests (NPPES server)
-- `snowflake-connector-python` - Snowflake connectivity (if needed)
+- `fastmcp>=0.1.0` - The FastMCP framework
+- `httpx>=0.27.0` - Async HTTP client for API requests (NPPES servers)
 
 ## About This Project
 
