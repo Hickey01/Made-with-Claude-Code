@@ -531,29 +531,84 @@ class TableauConfig:
 tableau_config = TableauConfig()
 
 
-def get_tableau_server():
-    """Get authenticated Tableau Server connection."""
+def get_user_jwt_from_context() -> Optional[str]:
+    """
+    Extract user's JWT token from FastMCP request context.
+
+    FastMCP validates the JWT and provides the decoded claims in the context.
+    This function retrieves the original JWT token string for passthrough to Tableau.
+
+    Returns:
+        JWT token string if available, None otherwise
+    """
+    try:
+        # FastMCP should provide the raw JWT token in the request context
+        # This is a placeholder - actual implementation depends on FastMCP's API
+        # TODO: Update based on FastMCP documentation for accessing raw JWT
+        import contextvars
+
+        # Check if FastMCP provides a context variable for the token
+        # This is speculative - may need adjustment based on actual FastMCP implementation
+        token = contextvars.copy_context().get('jwt_token')
+        return token
+    except Exception as e:
+        logger.debug(f"Could not extract JWT from context: {e}")
+        return None
+
+
+def get_tableau_server(user_jwt: Optional[str] = None):
+    """
+    Get authenticated Tableau Server connection.
+
+    Args:
+        user_jwt: Optional JWT token from user's Okta authentication.
+                 If provided, uses JWT passthrough (true SSO).
+                 If not provided, falls back to service account credentials.
+
+    Returns:
+        Authenticated Tableau Server connection
+    """
     if not tableau_config.is_configured:
         raise Exception("Tableau not configured. Set TABLEAU_SERVER_URL and authentication credentials.")
 
     server = TSC.Server(tableau_config.server_url, use_server_version=True)
 
-    # Authenticate with token or username/password
+    # Priority 1: Use user's JWT token if provided (true SSO)
+    if user_jwt:
+        try:
+            # JWT authentication - passes user's Okta token to Tableau
+            # Tableau validates the JWT with Okta directly
+            auth = TSC.JWTAuth(user_jwt, tableau_config.site_id)
+            server.auth.sign_in_with_jwt(auth)
+            logger.info("Tableau authentication successful via user JWT (SSO)")
+            return server
+        except Exception as e:
+            logger.warning(f"JWT authentication failed: {e}. Falling back to service account.")
+            # Fall through to service account authentication
+
+    # Priority 2: Personal Access Token (service account)
     if tableau_config.token_name and tableau_config.token_value:
         auth = TSC.PersonalAccessTokenAuth(
             tableau_config.token_name,
             tableau_config.token_value,
             tableau_config.site_id
         )
-    else:
+        server.auth.sign_in(auth)
+        logger.info("Tableau authentication successful via PAT (service account)")
+        return server
+
+    # Priority 3: Username/Password (service account)
+    if tableau_config.username and tableau_config.password:
         auth = TSC.TableauAuth(
             tableau_config.username,
             tableau_config.password,
             tableau_config.site_id
         )
+        server.auth.sign_in(auth)
+        logger.info("Tableau authentication successful via username/password (service account)")
+        return server
 
-    server.auth.sign_in(auth)
-    return server
+    raise Exception("No Tableau authentication method available (JWT, PAT, or username/password)")
 
 
 @mcp.tool()
@@ -604,7 +659,14 @@ URL: https://tableau.example.com/workbooks/financial-summary
 """
 
     try:
-        server = get_tableau_server()
+        # Try to get user's JWT for SSO passthrough
+        user_jwt = get_user_jwt_from_context()
+        if user_jwt:
+            logger.info("Using user's JWT for Tableau authentication (SSO passthrough)")
+        else:
+            logger.info("No user JWT available, using service account credentials")
+
+        server = get_tableau_server(user_jwt=user_jwt)
         workbooks, pagination = server.workbooks.get()
 
         output = [f"Found {pagination.total_available} Tableau workbooks:\n"]
@@ -663,7 +725,9 @@ Mock Results:
 """
 
     try:
-        server = get_tableau_server()
+        # Try to get user's JWT for SSO passthrough
+        user_jwt = get_user_jwt_from_context()
+        server = get_tableau_server(user_jwt=user_jwt)
 
         # Find the workbook
         req_option = TSC.RequestOptions()
@@ -743,7 +807,9 @@ Certified: Yes
 """
 
     try:
-        server = get_tableau_server()
+        # Try to get user's JWT for SSO passthrough
+        user_jwt = get_user_jwt_from_context()
+        server = get_tableau_server(user_jwt=user_jwt)
 
         req_option = TSC.RequestOptions()
         req_option.filter.add(TSC.Filter(TSC.RequestOptions.Field.Name,

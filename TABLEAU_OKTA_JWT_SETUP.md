@@ -75,7 +75,9 @@ curl -X POST "https://10ay.online.tableau.com/api/3.21/auth/signin" \
 3. Look for "Site LUID" field
 4. Copy the UUID value
 
-**Example LUID:** `abc12345-def6-7890-ghij-klmnopqrstuv`
+**CHG Healthcare Site LUID:** `c37e554a-0bfb-aa48-8037-87274e81445e`
+
+(This value was extracted from the CHG Okta SAML configuration Object GUID)
 
 ## Step 2: Configure Tableau Connected App (Tableau Admin)
 
@@ -145,15 +147,14 @@ After saving, verify:
 ```
 Claim Configuration:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Name: tableau_aud
+Name: tableau_aud (or just 'aud' if no conflicts)
 Include in token type: Access Token
 Value type: Expression
-Value: "tableau:YOUR_SITE_LUID_HERE"
-       Example: "tableau:abc12345-def6-7890-ghij-klmnopqrstuv"
+Value: "tableau:c37e554a-0bfb-aa48-8037-87274e81445e"
 Include in: Any scope
 Disable claim: No
 
-This creates a claim for Tableau-specific audience
+This creates the Tableau audience claim for CHG Healthcare site
 ```
 
 ### 3.3 Add Required Claims for Tableau
@@ -234,7 +235,7 @@ Use Okta's Token Preview to verify JWT structure:
    ```json
    {
      "iss": "https://mychg.okta.com/oauth2/default",
-     "aud": "tableau:YOUR_SITE_LUID",
+     "aud": "tableau:c37e554a-0bfb-aa48-8037-87274e81445e",
      "sub": "user@chghealthcare.com",
      "scp": ["tableau:content:read", "tableau:views:embed"],
      "groups": ["mcp_analyst"],
