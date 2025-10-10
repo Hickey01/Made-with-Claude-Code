@@ -22,7 +22,7 @@ API_VERSION = "2.1"
 # ECHO TOOLS
 # ============================================================================
 
-@mcp.tool()
+@mcp.tool
 def echo_tool(text: str) -> str:
     """Echo the input text back to you - useful for testing"""
     return text
