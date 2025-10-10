@@ -91,10 +91,56 @@ This server is ready for deployment to FastMCP Cloud:
 4. Set entry point to: `combined_server.py` or `combined_server:mcp`
 5. Deploy!
 
+## Security & Authentication
+
+This server supports **Okta OAuth 2.0 authentication** with role-based access control (RBAC).
+
+### Authentication Features
+- ✅ JWT token validation
+- ✅ Role-Based Access Control (RBAC)
+- ✅ Secure tool access management
+- ✅ Development mode (no auth) for local testing
+
+### Quick Start (Development Mode)
+
+To run without authentication (development only):
+```bash
+python combined_server.py
+```
+
+### Production Setup with Okta
+
+For production deployment with authentication:
+
+1. **Configure Okta** - See [OKTA_SETUP.md](OKTA_SETUP.md) for detailed instructions
+2. **Set environment variables**:
+```bash
+cp .env.example .env
+# Edit .env with your Okta credentials
+```
+
+3. **Run with authentication**:
+```bash
+python combined_server.py
+```
+
+### Role Definitions
+
+- **mcp_viewer**: Read-only access to public data
+- **mcp_analyst**: Data analyst with advanced search capabilities
+- **mcp_clinician**: Healthcare provider access
+- **mcp_admin**: Full administrative access
+
+See [OKTA_SETUP.md](OKTA_SETUP.md) for complete setup instructions.
+
 ## Dependencies
 
 - `fastmcp>=0.1.0` - The FastMCP framework
 - `httpx>=0.27.0` - Async HTTP client for API requests (NPPES servers)
+- `PyJWT>=2.8.0` - JWT token validation
+- `cryptography>=41.0.0` - Cryptographic operations
+- `cachetools>=5.3.0` - Token caching
+- `python-dotenv>=1.0.0` - Environment variable management
 
 ## About This Project
 

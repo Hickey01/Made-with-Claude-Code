@@ -1,16 +1,53 @@
 """
-Combined FastMCP Server - Echo & NPPES NPI Registry
+Combined FastMCP Server - Echo & NPPES NPI Registry with Okta Authentication
 
 This server provides both simple echo functionality and access to the
 National Plan and Provider Enumeration System (NPPES) NPI Registry API.
+
+Features:
+- Okta OAuth 2.0 authentication
+- Role-Based Access Control (RBAC)
+- JWT token validation
+- Secure tool access management
 """
 
+import os
+import logging
 from fastmcp import FastMCP
 import httpx
 from typing import Optional, Dict, Any
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
+
+# Configure logging
+logging.basicConfig(
+    level=os.getenv('LOG_LEVEL', 'INFO'),
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+# Import Okta authentication (will gracefully handle if not configured)
+try:
+    from okta_auth import (
+        OktaAuthMiddleware,
+        okta_config,
+        require_role,
+        require_scope,
+        can_access_tool
+    )
+    OKTA_ENABLED = okta_config.is_configured
+    if OKTA_ENABLED:
+        logger.info("Okta authentication ENABLED")
+    else:
+        logger.warning("Okta authentication NOT configured - running in development mode")
+except ImportError as e:
+    logger.error(f"Could not import Okta auth module: {e}")
+    OKTA_ENABLED = False
 
 # Create single server with both functionalities
-mcp = FastMCP("Echo & NPPES Combined Server")
+mcp = FastMCP("CHG Healthcare Echo & NPPES Combined Server")
 
 # ============================================================================
 # ECHO TOOLS
@@ -404,5 +441,58 @@ def explain_npi_prompt(npi_number: str) -> str:
 Use the lookup_npi tool to retrieve this information."""
 
 
+
+
+# ============================================================================
+# SECURITY & RBAC CONFIGURATION
+# ============================================================================
+
+# Apply Okta authentication middleware if enabled
+if OKTA_ENABLED:
+    logger.info("Applying Okta authentication middleware...")
+    app = mcp.sse_app()
+    app.add_middleware(OktaAuthMiddleware, public_paths=["/", "/health", "/metrics"])
+
+    # Apply role-based access control to tools
+    # Echo tool - available to all authenticated users
+    # (no restriction needed)
+
+    # NPPES tools - require viewer role or higher
+    for tool_name in ["lookup_npi", "search_providers", "search_organizations"]:
+        tool = mcp.get_tool(tool_name)
+        if tool:
+            tool.canAccess = require_role("mcp_viewer", "mcp_analyst", "mcp_clinician", "mcp_admin")
+            logger.info(f"RBAC applied to tool: {tool_name} (requires: viewer, analyst, clinician, or admin)")
+
+    # Advanced search - requires analyst role or higher
+    advanced_tool = mcp.get_tool("advanced_search")
+    if advanced_tool:
+        advanced_tool.canAccess = require_role("mcp_analyst", "mcp_clinician", "mcp_admin")
+        logger.info("RBAC applied to tool: advanced_search (requires: analyst, clinician, or admin)")
+
+    logger.info("Okta RBAC configuration complete")
+else:
+    logger.warning("Running without authentication - suitable for development only!")
+
+# Log server configuration
+logger.info(f"Server name: {mcp.name}")
+logger.info(f"Okta enabled: {OKTA_ENABLED}")
+logger.info(f"Available tools: {len(mcp._tools)}")
+
+
 if __name__ == "__main__":
+    # Run the server
+    host = os.getenv('MCP_SERVER_HOST', '0.0.0.0')
+    port = int(os.getenv('MCP_SERVER_PORT', 8000))
+
+    logger.info(f"Starting MCP server on {host}:{port}")
+    logger.info("=" * 60)
+    logger.info("SECURITY STATUS:")
+    logger.info(f"  - Authentication: {'ENABLED' if OKTA_ENABLED else 'DISABLED (DEV MODE)'}")
+    logger.info(f"  - RBAC: {'ENABLED' if OKTA_ENABLED else 'DISABLED'}")
+    if OKTA_ENABLED:
+        logger.info(f"  - Okta Issuer: {okta_config.issuer}")
+        logger.info(f"  - Audience: {okta_config.audience}")
+    logger.info("=" * 60)
+
     mcp.run()
