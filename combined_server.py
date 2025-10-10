@@ -37,17 +37,13 @@ security_logger = logging.getLogger('mcp.security')
 # OKTA AUTHENTICATION & RBAC
 # ============================================================================
 
-# Okta dependencies (optional for development mode)
+# Try to import FastMCP's native JWT verifier
 try:
-    import jwt
-    from jwt import PyJWKClient
-    from cachetools import TTLCache
-    from fastapi import HTTPException, Request
-    from starlette.middleware.base import BaseHTTPMiddleware
-    OKTA_DEPS_AVAILABLE = True
-except ImportError as e:
-    logger.warning(f"Okta dependencies not available: {e}. Running in development mode.")
-    OKTA_DEPS_AVAILABLE = False
+    from fastmcp.server.auth.verifiers import JWTVerifier
+    JWT_VERIFIER_AVAILABLE = True
+except ImportError:
+    logger.warning("FastMCP JWTVerifier not available. Authentication will be disabled.")
+    JWT_VERIFIER_AVAILABLE = False
 
 
 class OktaConfig:
@@ -61,14 +57,11 @@ class OktaConfig:
     @property
     def is_configured(self) -> bool:
         """Check if Okta is properly configured."""
-        return bool(self.issuer and self.audience and self.jwks_uri and OKTA_DEPS_AVAILABLE)
+        return bool(self.issuer and self.audience and self.jwks_uri and JWT_VERIFIER_AVAILABLE)
 
 
 # Global config instance
 okta_config = OktaConfig()
-
-# Token cache (if available)
-token_cache = TTLCache(maxsize=1000, ttl=3600) if OKTA_DEPS_AVAILABLE else None
 
 
 # RBAC Role Definitions
@@ -92,84 +85,20 @@ ROLE_DEFINITIONS = {
 }
 
 
-class AuthenticationError(Exception):
-    """Custom exception for authentication failures."""
-    pass
-
-
-async def validate_okta_token(access_token: str) -> Dict[str, Any]:
-    """
-    Validate Okta JWT token with comprehensive security checks.
-
-    Args:
-        access_token: JWT access token from Okta
-
-    Returns:
-        Dict containing validated token claims
-
-    Raises:
-        AuthenticationError: If token validation fails
-    """
-    if not okta_config.is_configured:
-        raise AuthenticationError("Okta authentication is not configured")
-
-    # Check cache first
-    cache_key = access_token[:32]
-    if token_cache and cache_key in token_cache:
-        logger.debug("Token found in cache")
-        return token_cache[cache_key]
-
-    start_time = time.time()
-
+# JWT Verifier instance (None if not available)
+jwt_verifier = None
+if okta_config.is_configured:
     try:
-        # Fetch JWKS and verify signature
-        jwks_client = PyJWKClient(okta_config.jwks_uri, cache_jwk_set=True, lifespan=360)
-        signing_key = jwks_client.get_signing_key_from_jwt(access_token)
-
-        # Decode and validate all claims
-        claims = jwt.decode(
-            access_token,
-            signing_key.key,
-            algorithms=["RS256"],
+        jwt_verifier = JWTVerifier(
+            jwks_uri=okta_config.jwks_uri,
             issuer=okta_config.issuer,
             audience=okta_config.audience,
-            options={
-                "verify_signature": True,
-                "verify_exp": True,
-                "verify_iat": True,
-                "verify_aud": True,
-                "verify_iss": True,
-                "require": ["exp", "iat", "sub", "aud", "iss"]
-            }
+            algorithm="RS256"
         )
-
-        # Cache validated claims
-        if token_cache:
-            ttl = max(claims['exp'] - int(time.time()), 0)
-            if ttl > 0:
-                token_cache[cache_key] = claims
-
-        # Logging
-        duration = time.time() - start_time
-        security_logger.info(f"Authentication success: user={claims.get('sub')}, duration={duration:.3f}s")
-
-        return claims
-
-    except jwt.ExpiredSignatureError:
-        security_logger.warning("Token validation failed: expired")
-        raise AuthenticationError("Token has expired. Please log in again.")
-    except jwt.InvalidAudienceError:
-        security_logger.error(f"Token validation failed: audience mismatch (expected: {okta_config.audience})")
-        raise AuthenticationError("Token audience mismatch")
-    except jwt.InvalidIssuerError:
-        security_logger.error(f"Token validation failed: issuer mismatch (expected: {okta_config.issuer})")
-        raise AuthenticationError("Token from untrusted issuer")
-    except jwt.InvalidSignatureError:
-        security_logger.error("Token validation failed: invalid signature")
-        raise AuthenticationError("Token signature invalid")
+        logger.info(f"JWT Verifier initialized for Okta issuer: {okta_config.issuer}")
     except Exception as e:
-        security_logger.exception(f"Token validation error: {e}")
-        raise AuthenticationError(f"Token validation failed: {str(e)}")
+        logger.error(f"Failed to initialize JWT verifier: {e}")
+        jwt_verifier = None
 
 
 def get_user_permissions(groups: List[str]) -> List[str]:
@@ -196,118 +125,67 @@ def get_user_permissions(groups: List[str]) -> List[str]:
 
 def require_role(*allowed_roles: str) -> Callable:
     """
-    Check if user has required role.
+    Create a canAccess function that checks if user has required role from Okta token.
+
+    This works with FastMCP's tool.canAccess mechanism.
 
     Args:
-        allowed_roles: Roles that can access the resource
+        allowed_roles: Roles that can access the resource (e.g., "mcp_viewer", "mcp_admin")
 
     Returns:
-        Function that checks if auth context has required role
+        Function that FastMCP calls with auth_context to check access
     """
     def check_access(auth_context: Dict[str, Any]) -> bool:
-        if not okta_config.is_configured:
-            # If Okta not configured, allow access (dev mode)
-            logger.debug(f"Okta not configured - allowing access to tool requiring roles: {allowed_roles}")
+        # If Okta not configured, allow access (dev mode)
+        if not okta_config.is_configured or jwt_verifier is None:
+            logger.debug(f"Okta not configured - allowing access in dev mode")
             return True
 
+        # Extract groups from the validated token claims
+        # FastMCP passes the validated JWT claims as auth_context
         user_groups = auth_context.get('groups', [])
+        user_sub = auth_context.get('sub', 'unknown')
 
         # Admins have access to everything
         if "mcp_admin" in user_groups:
+            logger.debug(f"Admin access granted for user {user_sub}")
             return True
 
         # Check if user has any of the allowed roles
         has_access = any(role in user_groups for role in allowed_roles)
 
-        if not has_access:
-            logger.warning(f"Access denied: user groups {user_groups} do not match required roles {allowed_roles}")
+        if has_access:
+            logger.debug(f"Access granted for user {user_sub} with groups {user_groups}")
+        else:
+            logger.warning(f"Access denied for user {user_sub}: groups {user_groups} do not match required roles {allowed_roles}")
 
         return has_access
 
     return check_access
 
 
-# Only define middleware if dependencies are available
-if OKTA_DEPS_AVAILABLE:
-    class OktaAuthMiddleware(BaseHTTPMiddleware):
-        """Middleware to validate Okta tokens on all requests."""
-
-        def __init__(self, app, public_paths: Optional[List[str]] = None):
-            super().__init__(app)
-            self.public_paths = public_paths or ["/", "/health", "/metrics", "/.well-known"]
-
-        async def dispatch(self, request: Request, call_next):
-            # Skip authentication for public paths
-            if any(request.url.path.startswith(path) for path in self.public_paths):
-                return await call_next(request)
-
-            # If Okta not configured, allow all requests (dev mode)
-            if not okta_config.is_configured:
-                logger.debug("Okta not configured - allowing unauthenticated request")
-                request.state.user = {"sub": "dev-user", "email": "dev@localhost", "groups": ["mcp_admin"]}
-                request.state.authenticated = False
-                return await call_next(request)
-
-            # Extract Authorization header
-            auth_header = request.headers.get("Authorization", "")
-
-            if not auth_header.startswith("Bearer "):
-                raise HTTPException(
-                    status_code=401,
-                    detail="Missing or invalid Authorization header",
-                    headers={"WWW-Authenticate": "Bearer"}
-                )
-
-            token = auth_header.replace("Bearer ", "")
-
-            try:
-                # Validate token
-                claims = await validate_okta_token(token)
-
-                # Attach user info to request state
-                request.state.user = claims
-                request.state.user_id = claims.get('sub')
-                request.state.email = claims.get('email', '')
-                request.state.groups = claims.get('groups', [])
-                request.state.scopes = claims.get('scp', [])
-                request.state.permissions = get_user_permissions(claims.get('groups', []))
-                request.state.authenticated = True
-
-                logger.debug(f"Request authenticated: user={claims.get('sub')}, groups={claims.get('groups', [])}")
-
-            except AuthenticationError as e:
-                security_logger.warning(f"Authentication failed: {e}")
-                raise HTTPException(
-                    status_code=401,
-                    detail=str(e),
-                    headers={"WWW-Authenticate": f'Bearer error="invalid_token", error_description="{e}"'}
-                )
-            except Exception as e:
-                logger.exception(f"Authentication middleware error: {e}")
-                raise HTTPException(
-                    status_code=500,
-                    detail="Internal authentication error"
-                )
-
-            return await call_next(request)
-else:
-    # Dummy middleware class when dependencies not available
-    OktaAuthMiddleware = None
+# No custom middleware needed - FastMCP handles JWT verification natively!
 
 
 # ============================================================================
 # FASTMCP SERVER INITIALIZATION
 # ============================================================================
 
-# Create single server with both functionalities
-mcp = FastMCP("CHG Healthcare Echo & NPPES Combined Server")
-
-# Check if Okta is enabled
-OKTA_ENABLED = okta_config.is_configured
-if OKTA_ENABLED:
-    logger.info("Okta authentication ENABLED")
+# Create server with JWT verifier if available
+if jwt_verifier:
+    mcp = FastMCP(
+        "CHG Healthcare Echo & NPPES Combined Server",
+        token_verifier=jwt_verifier
+    )
+    logger.info("✅ Okta authentication ENABLED - JWT verifier active")
+    logger.info(f"   Issuer: {okta_config.issuer}")
+    logger.info(f"   Audience: {okta_config.audience}")
+    OKTA_ENABLED = True
 else:
-    logger.warning("Okta authentication NOT configured - running in development mode")
+    mcp = FastMCP("CHG Healthcare Echo & NPPES Combined Server")
+    logger.warning("⚠️  Okta authentication NOT configured - running in development mode")
+    logger.warning("   All tools accessible without authentication")
+    OKTA_ENABLED = False
 
 
 # ============================================================================
@@ -710,41 +588,27 @@ Use the lookup_npi tool to retrieve this information."""
 # SECURITY & RBAC CONFIGURATION
 # ============================================================================
 
-# Apply Okta authentication middleware if enabled
-if OKTA_ENABLED and OktaAuthMiddleware is not None:
-    logger.info("Applying Okta authentication middleware...")
-    try:
-        app = mcp.sse_app()
-        app.add_middleware(OktaAuthMiddleware, public_paths=["/", "/health", "/metrics"])
-        logger.info("Okta authentication middleware applied successfully")
-    except Exception as e:
-        logger.error(f"Failed to apply Okta middleware: {e}")
-        OKTA_ENABLED = False
+# Apply role-based access control using FastMCP's canAccess mechanism
+# Note: In FastMCP, we apply canAccess directly to the decorated functions
+# The decorator creates the tool object and we can set canAccess on it
+if OKTA_ENABLED:
+    logger.info("Applying RBAC to tools...")
 
-    # Apply role-based access control to tools
     # Echo tool - available to all authenticated users (no restriction needed)
 
     # NPPES tools - require viewer role or higher
-    for tool_name in ["lookup_npi", "search_providers", "search_organizations"]:
-        tool = mcp.get_tool(tool_name)
-        if tool:
-            tool.canAccess = require_role("mcp_viewer", "mcp_analyst", "mcp_clinician", "mcp_admin")
-            logger.info(f"RBAC applied to tool: {tool_name} (requires: viewer, analyst, clinician, or admin)")
+    lookup_npi.canAccess = require_role("mcp_viewer", "mcp_analyst", "mcp_clinician", "mcp_admin")
+    search_providers.canAccess = require_role("mcp_viewer", "mcp_analyst", "mcp_clinician", "mcp_admin")
+    search_organizations.canAccess = require_role("mcp_viewer", "mcp_analyst", "mcp_clinician", "mcp_admin")
+    logger.info("   ✓ lookup_npi, search_providers, search_organizations: viewer, analyst, clinician, or admin")
 
     # Advanced search - requires analyst role or higher
-    advanced_tool = mcp.get_tool("advanced_search")
-    if advanced_tool:
-        advanced_tool.canAccess = require_role("mcp_analyst", "mcp_clinician", "mcp_admin")
-        logger.info("RBAC applied to tool: advanced_search (requires: analyst, clinician, or admin)")
+    advanced_search.canAccess = require_role("mcp_analyst", "mcp_clinician", "mcp_admin")
+    logger.info("   ✓ advanced_search: analyst, clinician, or admin")
 
-    if OKTA_ENABLED:
-        logger.info("Okta RBAC configuration complete")
+    logger.info("✅ RBAC configuration complete")
 else:
-    logger.warning("Running without authentication - suitable for development only!")
-
-# Log server configuration
-logger.info(f"Server name: {mcp.name}")
-logger.info(f"Okta enabled: {OKTA_ENABLED}")
+    logger.warning("⚠️  Running without RBAC - all tools accessible")
 
 
 # ============================================================================
