@@ -189,11 +189,36 @@ This project was created with assistance from **Claude Code**, an AI-powered dev
 - Best practices for FastMCP development
 - Complete tool, resource, and prompt implementations
 
+## Snowflake Integration
+
+This repository uses the **official Snowflake MCP Server** from Snowflake Labs for Snowflake data platform access.
+
+The Snowflake MCP provides:
+- **Cortex Search** - Query unstructured data for RAG applications
+- **Cortex Analyst** - Natural language queries on structured data
+- **Cortex Agent** - Agentic orchestration across data types
+- **SQL Execution** - Execute queries with permission controls
+- **Object Management** - Create and manage Snowflake objects
+
+### Quick Start
+
+```bash
+# Install Snowflake MCP
+pip install snowflake-mcp snowflake-connector-python
+
+# Run alongside this server
+snowflake-mcp --account your_account --user your_user --warehouse your_warehouse
+```
+
+See [SNOWFLAKE_MCP_SETUP.md](SNOWFLAKE_MCP_SETUP.md) for detailed configuration, Okta SSO integration, and usage examples.
+
 ## Learn More
 
 - [FastMCP Documentation](https://gofastmcp.com/)
 - [MCP Protocol](https://modelcontextprotocol.io/)
 - [NPPES NPI Registry](https://npiregistry.cms.hhs.gov/)
+- [Snowflake MCP Server](https://github.com/Snowflake-Labs/mcp)
+- [dbt Cloud API](https://docs.getdbt.com/dbt-cloud/api-v2)
 - [Claude Code](https://claude.com/claude-code)
 
 ## License

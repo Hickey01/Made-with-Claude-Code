@@ -1,0 +1,18 @@
+# Optional Snowflake MCP Server Dependencies
+# Install with: pip install -r requirements-snowflake.txt
+#
+# This installs the official Snowflake MCP Server from Snowflake Labs
+# which runs as a separate server alongside the CHG Combined Server.
+#
+# See SNOWFLAKE_MCP_SETUP.md for configuration and usage.
+
+# Snowflake MCP Server (Official from Snowflake Labs)
+# https://github.com/Snowflake-Labs/mcp
+snowflake-mcp>=0.1.0
+
+# Snowflake Python Connector
+# Required by Snowflake MCP for database connections
+snowflake-connector-python>=3.0.0
+
+# Additional Snowflake libraries for advanced features
+snowflake-sqlalchemy>=1.5.0  # SQLAlchemy dialect for Snowflake
