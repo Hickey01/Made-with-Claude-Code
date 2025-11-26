@@ -1,9 +1,9 @@
 """
-Combined FastMCP Server - Echo, NPPES NPI Registry & dbt Cloud with Okta Authentication
+Combined FastMCP Server - Echo, NPPES, dbt Cloud & Snowflake with Okta Authentication
 
 This server provides simple echo functionality, access to the
 National Plan and Provider Enumeration System (NPPES) NPI Registry API,
-and dbt Cloud integration.
+dbt Cloud integration, and Snowflake data platform access.
 
 Features:
 - Okta OAuth 2.0 authentication
@@ -11,6 +11,7 @@ Features:
 - JWT token validation
 - Secure tool access management
 - dbt Cloud API integration with OAuth
+- Snowflake data platform integration
 """
 
 import os
@@ -73,10 +74,12 @@ ROLE_DEFINITIONS = {
         "allowed_tools": ["echo_tool", "search_providers", "search_organizations", "lookup_npi"]
     },
     "mcp_analyst": {
-        "description": "Data analyst access with advanced search and dbt Cloud",
+        "description": "Data analyst access with advanced search, dbt Cloud, and Snowflake",
         "allowed_tools": ["echo_tool", "search_providers", "search_organizations", "lookup_npi", "advanced_search",
                           "list_dbt_projects", "list_dbt_jobs", "trigger_dbt_job", "get_dbt_run_status",
-                          "query_dbt_models"]
+                          "query_dbt_models", "execute_snowflake_query", "list_snowflake_databases",
+                          "list_snowflake_schemas", "list_snowflake_tables", "describe_snowflake_table",
+                          "list_snowflake_warehouses"]
     },
     "mcp_clinician": {
         "description": "Healthcare provider access",
@@ -178,7 +181,7 @@ def require_role(*allowed_roles: str) -> Callable:
 # Create server with JWT verifier if available
 if jwt_verifier:
     mcp = FastMCP(
-        "CHG Healthcare Multi-Tool Server (Echo, NPPES, dbt Cloud)",
+        "CHG Healthcare Multi-Tool Server (Echo, NPPES, dbt Cloud, Snowflake)",
         token_verifier=jwt_verifier
     )
     logger.info("✅ Okta authentication ENABLED - JWT verifier active")
@@ -186,7 +189,7 @@ if jwt_verifier:
     logger.info(f"   Audience: {okta_config.audience}")
     OKTA_ENABLED = True
 else:
-    mcp = FastMCP("CHG Healthcare Multi-Tool Server (Echo, NPPES, dbt Cloud)")
+    mcp = FastMCP("CHG Healthcare Multi-Tool Server (Echo, NPPES, dbt Cloud, Snowflake)")
     logger.warning("⚠️  Okta authentication NOT configured - running in development mode")
     logger.warning("   All tools accessible without authentication")
     OKTA_ENABLED = False
@@ -896,6 +899,506 @@ Description: Dimension table for healthcare providers
 
 
 # ============================================================================
+# SNOWFLAKE INTEGRATION
+# ============================================================================
+
+# Snowflake configuration
+try:
+    import snowflake.connector
+    from snowflake.connector import DictCursor
+    SNOWFLAKE_AVAILABLE = True
+except ImportError:
+    logger.warning("snowflake-connector-python not available. Snowflake tools will return mock data.")
+    SNOWFLAKE_AVAILABLE = False
+
+
+class SnowflakeConfig:
+    """Snowflake configuration"""
+    def __init__(self):
+        self.account = os.getenv('SNOWFLAKE_ACCOUNT')
+        self.user = os.getenv('SNOWFLAKE_USER')
+        self.password = os.getenv('SNOWFLAKE_PASSWORD')
+        self.warehouse = os.getenv('SNOWFLAKE_WAREHOUSE')
+        self.database = os.getenv('SNOWFLAKE_DATABASE')
+        self.schema = os.getenv('SNOWFLAKE_SCHEMA', 'PUBLIC')
+        self.role = os.getenv('SNOWFLAKE_ROLE')
+        self.authenticator = os.getenv('SNOWFLAKE_AUTHENTICATOR')  # e.g., 'externalbrowser' for SSO
+        self.private_key_path = os.getenv('SNOWFLAKE_PRIVATE_KEY_PATH')
+
+    @property
+    def is_configured(self) -> bool:
+        """Check if Snowflake is properly configured."""
+        has_account = bool(self.account and self.user)
+        has_auth = bool(
+            self.password or
+            self.authenticator == 'externalbrowser' or
+            self.private_key_path
+        )
+        return has_account and has_auth and SNOWFLAKE_AVAILABLE
+
+
+# Global Snowflake config
+snowflake_config = SnowflakeConfig()
+
+
+def get_snowflake_connection():
+    """
+    Get Snowflake connection with configured authentication.
+
+    Returns:
+        Snowflake connection object
+    """
+    if not snowflake_config.is_configured:
+        raise Exception("Snowflake not configured. Set SNOWFLAKE_ACCOUNT, SNOWFLAKE_USER, and authentication credentials.")
+
+    conn_params = {
+        'account': snowflake_config.account,
+        'user': snowflake_config.user,
+        'warehouse': snowflake_config.warehouse,
+        'database': snowflake_config.database,
+        'schema': snowflake_config.schema,
+    }
+
+    if snowflake_config.role:
+        conn_params['role'] = snowflake_config.role
+
+    # Authentication options
+    if snowflake_config.authenticator:
+        conn_params['authenticator'] = snowflake_config.authenticator
+    elif snowflake_config.private_key_path:
+        # Key pair authentication
+        with open(snowflake_config.private_key_path, 'rb') as key_file:
+            from cryptography.hazmat.backends import default_backend
+            from cryptography.hazmat.primitives import serialization
+
+            private_key = serialization.load_pem_private_key(
+                key_file.read(),
+                password=None,
+                backend=default_backend()
+            )
+            conn_params['private_key'] = private_key.private_bytes(
+                encoding=serialization.Encoding.DER,
+                format=serialization.PrivateFormat.PKCS8,
+                encryption_algorithm=serialization.NoEncryption()
+            )
+    elif snowflake_config.password:
+        conn_params['password'] = snowflake_config.password
+
+    return snowflake.connector.connect(**conn_params)
+
+
+@mcp.tool()
+async def execute_snowflake_query(query: str, limit: int = 100) -> str:
+    """
+    Execute a SQL query on Snowflake.
+
+    Requires: mcp_analyst, mcp_admin roles
+
+    Args:
+        query: SQL query to execute
+        limit: Maximum number of rows to return (default 100)
+
+    Returns:
+        Query results formatted as a table
+    """
+    if not snowflake_config.is_configured:
+        return f"""Snowflake Query (Demo Mode):
+
+Query: {query}
+Limit: {limit}
+
+Mock Results:
+┌────────────┬─────────────┬──────────┐
+│ PATIENT_ID │ PROVIDER_NPI│ AMOUNT   │
+├────────────┼─────────────┼──────────┤
+│ P001       │ 1234567890  │ $1,250.00│
+│ P002       │ 1234567891  │ $850.50  │
+│ P003       │ 1234567890  │ $2,100.75│
+└────────────┴─────────────┴──────────┘
+
+ℹ️  To execute real queries, configure:
+   - SNOWFLAKE_ACCOUNT
+   - SNOWFLAKE_USER
+   - Authentication (password, SSO, or key pair)
+"""
+
+    try:
+        conn = get_snowflake_connection()
+        cursor = conn.cursor(DictCursor)
+
+        # Add limit to query if not already present
+        query_lower = query.lower()
+        if 'limit' not in query_lower:
+            query = f"{query.rstrip(';')} LIMIT {limit}"
+
+        cursor.execute(query)
+        results = cursor.fetchall()
+
+        if not results:
+            return "Query executed successfully. No rows returned."
+
+        # Format results
+        output = [f"Query Results ({len(results)} rows):\n"]
+
+        # Get column names
+        columns = list(results[0].keys())
+
+        # Simple table formatting
+        output.append(" | ".join(columns))
+        output.append("-" * (len(" | ".join(columns))))
+
+        for row in results:
+            output.append(" | ".join(str(row.get(col, "")) for col in columns))
+
+        cursor.close()
+        conn.close()
+
+        return "\n".join(output)
+
+    except Exception as e:
+        logger.error(f"Snowflake query error: {e}")
+        return f"Error executing query: {str(e)}"
+
+
+@mcp.tool()
+async def list_snowflake_databases() -> str:
+    """
+    List databases in Snowflake account.
+
+    Requires: mcp_analyst, mcp_admin roles
+
+    Returns:
+        List of databases with details
+    """
+    if not snowflake_config.is_configured:
+        return """Snowflake Databases (Demo Mode):
+
+--- Database 1 ---
+Name: HEALTHCARE_DATA
+Owner: SYSADMIN
+Created: 2024-01-15
+Size: 523 GB
+
+--- Database 2 ---
+Name: ANALYTICS_PROD
+Owner: SYSADMIN
+Created: 2024-02-20
+Size: 1.2 TB
+
+--- Database 3 ---
+Name: STAGING
+Owner: SYSADMIN
+Created: 2024-03-01
+Size: 89 GB
+
+ℹ️  Configure Snowflake to access real databases.
+"""
+
+    try:
+        conn = get_snowflake_connection()
+        cursor = conn.cursor(DictCursor)
+
+        cursor.execute("SHOW DATABASES")
+        results = cursor.fetchall()
+
+        output = [f"Found {len(results)} database(s):\n"]
+
+        for i, db in enumerate(results, 1):
+            output.append(f"\n--- Database {i} ---")
+            output.append(f"Name: {db.get('name', 'N/A')}")
+            output.append(f"Owner: {db.get('owner', 'N/A')}")
+            output.append(f"Created: {db.get('created_on', 'N/A')}")
+            output.append(f"Comment: {db.get('comment', 'N/A')}")
+
+        cursor.close()
+        conn.close()
+
+        return "\n".join(output)
+
+    except Exception as e:
+        logger.error(f"Snowflake error: {e}")
+        return f"Error listing databases: {str(e)}"
+
+
+@mcp.tool()
+async def list_snowflake_schemas(database: Optional[str] = None) -> str:
+    """
+    List schemas in a Snowflake database.
+
+    Requires: mcp_analyst, mcp_admin roles
+
+    Args:
+        database: Database name (uses configured database if not specified)
+
+    Returns:
+        List of schemas
+    """
+    if not snowflake_config.is_configured:
+        return f"""Snowflake Schemas (Demo Mode):
+
+Database: {database or 'HEALTHCARE_DATA'}
+
+--- Schema 1 ---
+Name: PUBLIC
+Owner: SYSADMIN
+Tables: 45
+
+--- Schema 2 ---
+Name: STAGING
+Owner: DATA_ENGINEER
+Tables: 23
+
+--- Schema 3 ---
+Name: ANALYTICS
+Owner: ANALYST_ROLE
+Tables: 67
+
+ℹ️  Configure Snowflake to access real schemas.
+"""
+
+    try:
+        conn = get_snowflake_connection()
+        cursor = conn.cursor(DictCursor)
+
+        if database:
+            cursor.execute(f"SHOW SCHEMAS IN DATABASE {database}")
+        else:
+            cursor.execute("SHOW SCHEMAS")
+
+        results = cursor.fetchall()
+
+        output = [f"Found {len(results)} schema(s):\n"]
+
+        for i, schema in enumerate(results, 1):
+            output.append(f"\n--- Schema {i} ---")
+            output.append(f"Name: {schema.get('name', 'N/A')}")
+            output.append(f"Database: {schema.get('database_name', 'N/A')}")
+            output.append(f"Owner: {schema.get('owner', 'N/A')}")
+            output.append(f"Created: {schema.get('created_on', 'N/A')}")
+
+        cursor.close()
+        conn.close()
+
+        return "\n".join(output)
+
+    except Exception as e:
+        logger.error(f"Snowflake error: {e}")
+        return f"Error listing schemas: {str(e)}"
+
+
+@mcp.tool()
+async def list_snowflake_tables(schema: Optional[str] = None, database: Optional[str] = None) -> str:
+    """
+    List tables in a Snowflake schema.
+
+    Requires: mcp_analyst, mcp_admin roles
+
+    Args:
+        schema: Schema name (uses configured schema if not specified)
+        database: Database name (uses configured database if not specified)
+
+    Returns:
+        List of tables with row counts
+    """
+    if not snowflake_config.is_configured:
+        return f"""Snowflake Tables (Demo Mode):
+
+Database: {database or 'HEALTHCARE_DATA'}
+Schema: {schema or 'PUBLIC'}
+
+--- Table 1 ---
+Name: PATIENTS
+Type: TABLE
+Rows: 1,234,567
+Size: 45 GB
+
+--- Table 2 ---
+Name: ENCOUNTERS
+Type: TABLE
+Rows: 5,678,901
+Size: 123 GB
+
+--- Table 3 ---
+Name: PROVIDERS
+Type: TABLE
+Rows: 45,678
+Size: 2.1 GB
+
+ℹ️  Configure Snowflake to access real tables.
+"""
+
+    try:
+        conn = get_snowflake_connection()
+        cursor = conn.cursor(DictCursor)
+
+        if database and schema:
+            cursor.execute(f"SHOW TABLES IN {database}.{schema}")
+        elif schema:
+            cursor.execute(f"SHOW TABLES IN SCHEMA {schema}")
+        else:
+            cursor.execute("SHOW TABLES")
+
+        results = cursor.fetchall()
+
+        output = [f"Found {len(results)} table(s):\n"]
+
+        for i, table in enumerate(results, 1):
+            output.append(f"\n--- Table {i} ---")
+            output.append(f"Name: {table.get('name', 'N/A')}")
+            output.append(f"Database: {table.get('database_name', 'N/A')}")
+            output.append(f"Schema: {table.get('schema_name', 'N/A')}")
+            output.append(f"Type: {table.get('kind', 'N/A')}")
+            output.append(f"Rows: {table.get('rows', 'N/A')}")
+            output.append(f"Bytes: {table.get('bytes', 'N/A')}")
+            output.append(f"Created: {table.get('created_on', 'N/A')}")
+
+        cursor.close()
+        conn.close()
+
+        return "\n".join(output)
+
+    except Exception as e:
+        logger.error(f"Snowflake error: {e}")
+        return f"Error listing tables: {str(e)}"
+
+
+@mcp.tool()
+async def describe_snowflake_table(table_name: str, schema: Optional[str] = None, database: Optional[str] = None) -> str:
+    """
+    Describe the structure of a Snowflake table.
+
+    Requires: mcp_analyst, mcp_admin roles
+
+    Args:
+        table_name: Name of the table
+        schema: Schema name (uses configured schema if not specified)
+        database: Database name (uses configured database if not specified)
+
+    Returns:
+        Table structure with column details
+    """
+    if not snowflake_config.is_configured:
+        return f"""Table Structure (Demo Mode):
+
+Table: {table_name}
+Database: {database or 'HEALTHCARE_DATA'}
+Schema: {schema or 'PUBLIC'}
+
+Columns:
+┌─────────────────┬──────────┬──────────┬─────────┐
+│ Column Name     │ Type     │ Nullable │ Default │
+├─────────────────┼──────────┼──────────┼─────────┤
+│ PATIENT_ID      │ VARCHAR  │ NO       │ NULL    │
+│ FIRST_NAME      │ VARCHAR  │ YES      │ NULL    │
+│ LAST_NAME       │ VARCHAR  │ YES      │ NULL    │
+│ DATE_OF_BIRTH   │ DATE     │ YES      │ NULL    │
+│ CREATED_AT      │ TIMESTAMP│ NO       │ CURRENT │
+└─────────────────┴──────────┴──────────┴─────────┘
+
+ℹ️  Configure Snowflake to access real table structures.
+"""
+
+    try:
+        conn = get_snowflake_connection()
+        cursor = conn.cursor(DictCursor)
+
+        # Build fully qualified table name
+        if database and schema:
+            full_table = f"{database}.{schema}.{table_name}"
+        elif schema:
+            full_table = f"{schema}.{table_name}"
+        else:
+            full_table = table_name
+
+        cursor.execute(f"DESCRIBE TABLE {full_table}")
+        results = cursor.fetchall()
+
+        output = [f"Table Structure: {full_table}\n"]
+        output.append(f"Columns ({len(results)}):\n")
+
+        for col in results:
+            output.append(f"- {col.get('name', 'N/A')}")
+            output.append(f"  Type: {col.get('type', 'N/A')}")
+            output.append(f"  Nullable: {col.get('null?', 'N/A')}")
+            output.append(f"  Default: {col.get('default', 'N/A')}")
+            if col.get('comment'):
+                output.append(f"  Comment: {col.get('comment')}")
+            output.append("")
+
+        cursor.close()
+        conn.close()
+
+        return "\n".join(output)
+
+    except Exception as e:
+        logger.error(f"Snowflake error: {e}")
+        return f"Error describing table: {str(e)}"
+
+
+@mcp.tool()
+async def list_snowflake_warehouses() -> str:
+    """
+    List Snowflake warehouses.
+
+    Requires: mcp_analyst, mcp_admin roles
+
+    Returns:
+        List of warehouses with status and size
+    """
+    if not snowflake_config.is_configured:
+        return """Snowflake Warehouses (Demo Mode):
+
+--- Warehouse 1 ---
+Name: ANALYTICS_WH
+Size: MEDIUM
+State: STARTED
+Auto-suspend: 600s
+
+--- Warehouse 2 ---
+Name: TRANSFORM_WH
+Size: LARGE
+State: SUSPENDED
+Auto-suspend: 300s
+
+--- Warehouse 3 ---
+Name: DEV_WH
+Size: X-SMALL
+State: STARTED
+Auto-suspend: 120s
+
+ℹ️  Configure Snowflake to access real warehouses.
+"""
+
+    try:
+        conn = get_snowflake_connection()
+        cursor = conn.cursor(DictCursor)
+
+        cursor.execute("SHOW WAREHOUSES")
+        results = cursor.fetchall()
+
+        output = [f"Found {len(results)} warehouse(s):\n"]
+
+        for i, wh in enumerate(results, 1):
+            output.append(f"\n--- Warehouse {i} ---")
+            output.append(f"Name: {wh.get('name', 'N/A')}")
+            output.append(f"Size: {wh.get('size', 'N/A')}")
+            output.append(f"State: {wh.get('state', 'N/A')}")
+            output.append(f"Type: {wh.get('type', 'N/A')}")
+            output.append(f"Auto-suspend: {wh.get('auto_suspend', 'N/A')}s")
+            output.append(f"Auto-resume: {wh.get('auto_resume', 'N/A')}")
+            output.append(f"Owner: {wh.get('owner', 'N/A')}")
+
+        cursor.close()
+        conn.close()
+
+        return "\n".join(output)
+
+    except Exception as e:
+        logger.error(f"Snowflake error: {e}")
+        return f"Error listing warehouses: {str(e)}"
+
+
+# ============================================================================
 # RESOURCES
 # ============================================================================
 
@@ -1013,6 +1516,15 @@ if OKTA_ENABLED:
     get_dbt_run_status.canAccess = require_role("mcp_analyst", "mcp_admin")
     query_dbt_models.canAccess = require_role("mcp_analyst", "mcp_admin")
     logger.info("   ✓ dbt Cloud tools (list_dbt_projects, list_dbt_jobs, trigger_dbt_job, get_dbt_run_status, query_dbt_models): analyst or admin")
+
+    # Snowflake tools - require analyst role or admin
+    execute_snowflake_query.canAccess = require_role("mcp_analyst", "mcp_admin")
+    list_snowflake_databases.canAccess = require_role("mcp_analyst", "mcp_admin")
+    list_snowflake_schemas.canAccess = require_role("mcp_analyst", "mcp_admin")
+    list_snowflake_tables.canAccess = require_role("mcp_analyst", "mcp_admin")
+    describe_snowflake_table.canAccess = require_role("mcp_analyst", "mcp_admin")
+    list_snowflake_warehouses.canAccess = require_role("mcp_analyst", "mcp_admin")
+    logger.info("   ✓ Snowflake tools (execute_snowflake_query, list_snowflake_databases, list_snowflake_schemas, list_snowflake_tables, describe_snowflake_table, list_snowflake_warehouses): analyst or admin")
 
     logger.info("✅ RBAC configuration complete")
 else:
