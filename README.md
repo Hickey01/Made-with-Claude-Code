@@ -4,10 +4,10 @@ A collection of FastMCP servers built with the help of Claude Code, demonstratin
 
 ## What's Inside
 
-This repository contains a combined FastMCP server for echo testing, healthcare provider data access, and dbt Cloud integration:
+This repository contains a combined FastMCP server for echo testing, healthcare provider data access, dbt Cloud integration, and Snowflake data platform access:
 
 ### Combined Server (`combined_server.py`) ⭐ **MAIN SERVER**
-A comprehensive server that combines echo functionality, National Plan and Provider Enumeration System (NPPES) NPI Registry API access, and dbt Cloud integration:
+A comprehensive server that combines echo functionality, National Plan and Provider Enumeration System (NPPES) NPI Registry API access, dbt Cloud integration, and Snowflake data platform access:
 
 #### Echo Tools
 - `echo_tool(text)` - Simple echo for testing
@@ -26,6 +26,14 @@ A comprehensive server that combines echo functionality, National Plan and Provi
 - `trigger_dbt_job(job_id, cause)` - Trigger a dbt Cloud job run
 - `get_dbt_run_status(run_id)` - Get status and results of a dbt Cloud run
 - `query_dbt_models(project_id, search, limit)` - Query dbt models metadata
+
+#### Snowflake Tools
+- `execute_snowflake_query(query, limit)` - Execute SQL queries on Snowflake
+- `list_snowflake_databases()` - List databases in Snowflake account
+- `list_snowflake_schemas(database)` - List schemas in a database
+- `list_snowflake_tables(schema, database)` - List tables with row counts
+- `describe_snowflake_table(table_name, schema, database)` - Get table structure
+- `list_snowflake_warehouses()` - List warehouses with status and size
 
 **Provider information includes:**
 - Basic Information (names, credentials, enumeration dates)
@@ -97,6 +105,14 @@ trigger_dbt_job(job_id=12345, cause="Manual trigger from MCP")
 # Check dbt Cloud run status
 get_dbt_run_status(run_id=67890)
 # Returns: Run status, duration, and test results
+
+# Execute Snowflake query
+execute_snowflake_query("SELECT * FROM PATIENTS WHERE STATE = 'CA'", limit=50)
+# Returns: Query results formatted as a table
+
+# List Snowflake tables
+list_snowflake_tables(schema="PUBLIC", database="HEALTHCARE_DATA")
+# Returns: List of tables with row counts and sizes
 ```
 
 ## Deployment
@@ -146,7 +162,7 @@ python combined_server.py
 ### Role Definitions
 
 - **mcp_viewer**: Read-only access to public data (NPPES search and lookup)
-- **mcp_analyst**: Data analyst with advanced search and dbt Cloud access
+- **mcp_analyst**: Data analyst with advanced search, dbt Cloud, and Snowflake access
 - **mcp_clinician**: Healthcare provider access with advanced search
 - **mcp_admin**: Full administrative access to all tools
 
@@ -172,6 +188,37 @@ DBT_CLOUD_OAUTH_CLIENT_SECRET=your_oauth_client_secret
 
 The server will work in demo mode if dbt Cloud is not configured, returning mock data for testing.
 
+### Snowflake Configuration
+
+To enable Snowflake integration, add these environment variables to your `.env` file:
+
+```bash
+# Snowflake Configuration
+SNOWFLAKE_ACCOUNT=your_account
+SNOWFLAKE_USER=your_user
+SNOWFLAKE_WAREHOUSE=ANALYTICS_WH
+SNOWFLAKE_DATABASE=HEALTHCARE_DATA
+SNOWFLAKE_SCHEMA=PUBLIC
+SNOWFLAKE_ROLE=ANALYST_ROLE
+
+# Authentication Options:
+# Option 1: Okta SSO (Recommended)
+SNOWFLAKE_AUTHENTICATOR=externalbrowser
+
+# Option 2: Key Pair Authentication
+SNOWFLAKE_PRIVATE_KEY_PATH=/path/to/rsa_key.p8
+
+# Option 3: Password (Development only)
+SNOWFLAKE_PASSWORD=your_password
+```
+
+**Authentication Options:**
+1. **Okta SSO** - Use `externalbrowser` authenticator for Okta SSO
+2. **Key Pair** - Use RSA key pair for service accounts
+3. **Password** - Username/password (development only)
+
+The server will work in demo mode if Snowflake is not configured, returning mock data for testing.
+
 ## Dependencies
 
 - `fastmcp>=0.1.0` - The FastMCP framework
@@ -180,6 +227,7 @@ The server will work in demo mode if dbt Cloud is not configured, returning mock
 - `cryptography>=41.0.0` - Cryptographic operations
 - `cachetools>=5.3.0` - Token caching
 - `python-dotenv>=1.0.0` - Environment variable management
+- `snowflake-connector-python>=3.0.0` - Snowflake data platform connector
 
 ## About This Project
 
@@ -189,28 +237,16 @@ This project was created with assistance from **Claude Code**, an AI-powered dev
 - Best practices for FastMCP development
 - Complete tool, resource, and prompt implementations
 
-## Snowflake Integration
+## Advanced: Official Snowflake MCP (Optional)
 
-This repository uses the **official Snowflake MCP Server** from Snowflake Labs for Snowflake data platform access.
-
-The Snowflake MCP provides:
-- **Cortex Search** - Query unstructured data for RAG applications
-- **Cortex Analyst** - Natural language queries on structured data
-- **Cortex Agent** - Agentic orchestration across data types
-- **SQL Execution** - Execute queries with permission controls
-- **Object Management** - Create and manage Snowflake objects
-
-### Quick Start
+For advanced Snowflake features like Cortex AI (Search, Analyst, Agent), you can optionally run the **official Snowflake MCP Server** from Snowflake Labs alongside this server:
 
 ```bash
-# Install Snowflake MCP
-pip install snowflake-mcp snowflake-connector-python
-
-# Run alongside this server
+pip install snowflake-mcp
 snowflake-mcp --account your_account --user your_user --warehouse your_warehouse
 ```
 
-See [SNOWFLAKE_MCP_SETUP.md](SNOWFLAKE_MCP_SETUP.md) for detailed configuration, Okta SSO integration, and usage examples.
+See [SNOWFLAKE_MCP_SETUP.md](SNOWFLAKE_MCP_SETUP.md) for Cortex AI features and advanced configuration.
 
 ## Learn More
 
