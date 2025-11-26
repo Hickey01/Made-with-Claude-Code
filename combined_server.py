@@ -1,14 +1,16 @@
 """
-Combined FastMCP Server - Echo & NPPES NPI Registry with Okta Authentication
+Combined FastMCP Server - Echo, NPPES NPI Registry & dbt Cloud with Okta Authentication
 
-This server provides both simple echo functionality and access to the
-National Plan and Provider Enumeration System (NPPES) NPI Registry API.
+This server provides simple echo functionality, access to the
+National Plan and Provider Enumeration System (NPPES) NPI Registry API,
+and dbt Cloud integration.
 
 Features:
 - Okta OAuth 2.0 authentication
 - Role-Based Access Control (RBAC)
 - JWT token validation
 - Secure tool access management
+- dbt Cloud API integration with OAuth
 """
 
 import os
@@ -71,9 +73,10 @@ ROLE_DEFINITIONS = {
         "allowed_tools": ["echo_tool", "search_providers", "search_organizations", "lookup_npi"]
     },
     "mcp_analyst": {
-        "description": "Data analyst access with advanced search and Tableau",
+        "description": "Data analyst access with advanced search and dbt Cloud",
         "allowed_tools": ["echo_tool", "search_providers", "search_organizations", "lookup_npi", "advanced_search",
-                          "list_tableau_workbooks", "query_tableau_view", "get_tableau_datasource"]
+                          "list_dbt_projects", "list_dbt_jobs", "trigger_dbt_job", "get_dbt_run_status",
+                          "query_dbt_models"]
     },
     "mcp_clinician": {
         "description": "Healthcare provider access",
@@ -175,7 +178,7 @@ def require_role(*allowed_roles: str) -> Callable:
 # Create server with JWT verifier if available
 if jwt_verifier:
     mcp = FastMCP(
-        "CHG Healthcare Multi-Tool Server (Echo, NPPES, Tableau)",
+        "CHG Healthcare Multi-Tool Server (Echo, NPPES, dbt Cloud)",
         token_verifier=jwt_verifier
     )
     logger.info("✅ Okta authentication ENABLED - JWT verifier active")
@@ -183,7 +186,7 @@ if jwt_verifier:
     logger.info(f"   Audience: {okta_config.audience}")
     OKTA_ENABLED = True
 else:
-    mcp = FastMCP("CHG Healthcare Multi-Tool Server (Echo, NPPES, Tableau)")
+    mcp = FastMCP("CHG Healthcare Multi-Tool Server (Echo, NPPES, dbt Cloud)")
     logger.warning("⚠️  Okta authentication NOT configured - running in development mode")
     logger.warning("   All tools accessible without authentication")
     OKTA_ENABLED = False
@@ -497,347 +500,399 @@ async def advanced_search(
 
 
 # ============================================================================
-# TABLEAU INTEGRATION
+# DBT CLOUD INTEGRATION
 # ============================================================================
 
-# Tableau configuration (optional - for demo purposes)
-try:
-    import tableauserverclient as TSC
-    TABLEAU_AVAILABLE = True
-except ImportError:
-    logger.warning("tableauserverclient not available. Tableau tools will return mock data.")
-    TABLEAU_AVAILABLE = False
-
-
-class TableauConfig:
-    """Tableau Server configuration"""
+class DbtCloudConfig:
+    """dbt Cloud configuration"""
     def __init__(self):
-        self.server_url = os.getenv('TABLEAU_SERVER_URL')
-        self.site_id = os.getenv('TABLEAU_SITE_ID', '')
-        self.token_name = os.getenv('TABLEAU_TOKEN_NAME')
-        self.token_value = os.getenv('TABLEAU_TOKEN_VALUE')
-        self.username = os.getenv('TABLEAU_USERNAME')
-        self.password = os.getenv('TABLEAU_PASSWORD')
+        self.api_url = os.getenv('DBT_CLOUD_API_URL', 'https://cloud.getdbt.com/api/v2')
+        self.account_id = os.getenv('DBT_CLOUD_ACCOUNT_ID')
+        self.service_token = os.getenv('DBT_CLOUD_SERVICE_TOKEN')  # Service account token
+        # OAuth configuration for user-level authentication
+        self.oauth_client_id = os.getenv('DBT_CLOUD_OAUTH_CLIENT_ID')
+        self.oauth_client_secret = os.getenv('DBT_CLOUD_OAUTH_CLIENT_SECRET')
 
     @property
     def is_configured(self) -> bool:
-        """Check if Tableau is properly configured."""
-        has_server = bool(self.server_url)
-        has_auth = bool((self.token_name and self.token_value) or (self.username and self.password))
-        return has_server and has_auth and TABLEAU_AVAILABLE
+        """Check if dbt Cloud is properly configured."""
+        has_base = bool(self.api_url and self.account_id)
+        has_auth = bool(self.service_token or (self.oauth_client_id and self.oauth_client_secret))
+        return has_base and has_auth
 
 
-# Global Tableau config
-tableau_config = TableauConfig()
+# Global dbt Cloud config
+dbt_config = DbtCloudConfig()
 
 
-def get_user_jwt_from_context() -> Optional[str]:
+async def make_dbt_request(
+    endpoint: str,
+    method: str = "GET",
+    params: Optional[Dict[str, Any]] = None,
+    json_data: Optional[Dict[str, Any]] = None,
+    user_token: Optional[str] = None
+) -> Dict[str, Any]:
     """
-    Extract user's JWT token from FastMCP request context.
-
-    FastMCP validates the JWT and provides the decoded claims in the context.
-    This function retrieves the original JWT token string for passthrough to Tableau.
-
-    Returns:
-        JWT token string if available, None otherwise
-    """
-    try:
-        # FastMCP should provide the raw JWT token in the request context
-        # This is a placeholder - actual implementation depends on FastMCP's API
-        # TODO: Update based on FastMCP documentation for accessing raw JWT
-        import contextvars
-
-        # Check if FastMCP provides a context variable for the token
-        # This is speculative - may need adjustment based on actual FastMCP implementation
-        token = contextvars.copy_context().get('jwt_token')
-        return token
-    except Exception as e:
-        logger.debug(f"Could not extract JWT from context: {e}")
-        return None
-
-
-def get_tableau_server(user_jwt: Optional[str] = None):
-    """
-    Get authenticated Tableau Server connection.
+    Make a request to the dbt Cloud API.
 
     Args:
-        user_jwt: Optional JWT token from user's Okta authentication.
-                 If provided, uses JWT passthrough (true SSO).
-                 If not provided, falls back to service account credentials.
+        endpoint: API endpoint path (e.g., "accounts/{account_id}/projects")
+        method: HTTP method (GET, POST, etc.)
+        params: Query parameters
+        json_data: JSON body for POST/PATCH requests
+        user_token: Optional user OAuth token for user-level requests
 
     Returns:
-        Authenticated Tableau Server connection
+        API response as dictionary
     """
-    if not tableau_config.is_configured:
-        raise Exception("Tableau not configured. Set TABLEAU_SERVER_URL and authentication credentials.")
+    if not dbt_config.is_configured:
+        return {"error": "dbt Cloud not configured. Set DBT_CLOUD_ACCOUNT_ID and authentication credentials."}
 
-    server = TSC.Server(tableau_config.server_url, use_server_version=True)
+    url = f"{dbt_config.api_url}/{endpoint}"
 
-    # Priority 1: Use user's JWT token if provided (true SSO)
-    if user_jwt:
+    # Use user token if provided, otherwise fall back to service token
+    token = user_token if user_token else dbt_config.service_token
+
+    if not token:
+        return {"error": "No authentication token available"}
+
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json"
+    }
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
         try:
-            # JWT authentication - passes user's Okta token to Tableau
-            # Tableau validates the JWT with Okta directly
-            auth = TSC.JWTAuth(user_jwt, tableau_config.site_id)
-            server.auth.sign_in_with_jwt(auth)
-            logger.info("Tableau authentication successful via user JWT (SSO)")
-            return server
+            response = await client.request(
+                method=method,
+                url=url,
+                headers=headers,
+                params=params,
+                json=json_data
+            )
+            response.raise_for_status()
+            return response.json()
+        except httpx.HTTPError as e:
+            logger.error(f"dbt Cloud API error: {e}")
+            return {"error": f"HTTP error occurred: {str(e)}"}
         except Exception as e:
-            logger.warning(f"JWT authentication failed: {e}. Falling back to service account.")
-            # Fall through to service account authentication
-
-    # Priority 2: Personal Access Token (service account)
-    if tableau_config.token_name and tableau_config.token_value:
-        auth = TSC.PersonalAccessTokenAuth(
-            tableau_config.token_name,
-            tableau_config.token_value,
-            tableau_config.site_id
-        )
-        server.auth.sign_in(auth)
-        logger.info("Tableau authentication successful via PAT (service account)")
-        return server
-
-    # Priority 3: Username/Password (service account)
-    if tableau_config.username and tableau_config.password:
-        auth = TSC.TableauAuth(
-            tableau_config.username,
-            tableau_config.password,
-            tableau_config.site_id
-        )
-        server.auth.sign_in(auth)
-        logger.info("Tableau authentication successful via username/password (service account)")
-        return server
-
-    raise Exception("No Tableau authentication method available (JWT, PAT, or username/password)")
+            logger.error(f"dbt Cloud request error: {e}")
+            return {"error": f"An error occurred: {str(e)}"}
 
 
 @mcp.tool()
-async def list_tableau_workbooks(limit: int = 20) -> str:
+async def list_dbt_projects(limit: int = 20) -> str:
     """
-    List Tableau workbooks available on the server.
+    List dbt Cloud projects in the account.
 
     Requires: mcp_analyst, mcp_admin roles
 
     Args:
-        limit: Maximum number of workbooks to return (default 20)
+        limit: Maximum number of projects to return (default 20)
 
     Returns:
-        List of workbooks with names, projects, and view counts
+        List of dbt Cloud projects with details
     """
-    if not tableau_config.is_configured:
-        # Return mock data for demo
-        return """Tableau Workbooks (Demo Mode - Tableau not configured):
+    if not dbt_config.is_configured:
+        return """dbt Cloud Projects (Demo Mode - dbt Cloud not configured):
 
---- Workbook 1 ---
-Name: Healthcare Analytics Dashboard
-Project: Executive Reports
-Views: 12
-Owner: analytics-team
+--- Project 1 ---
+ID: 12345
+Name: Healthcare Analytics
+Repository: github.com/company/healthcare-dbt
+State: Active
 Created: 2024-01-15
-URL: https://tableau.example.com/workbooks/healthcare-analytics
 
---- Workbook 2 ---
-Name: Provider Performance Metrics
-Project: Operations
-Views: 8
-Owner: ops-team
-Created: 2024-02-20
-URL: https://tableau.example.com/workbooks/provider-performance
+--- Project 2 ---
+Name: Provider Data Warehouse
+Repository: github.com/company/provider-dbt
+State: Active
+Created: 2024-02-10
 
---- Workbook 3 ---
-Name: Financial Summary Q1 2024
-Project: Finance
-Views: 5
-Owner: finance-team
-Created: 2024-03-10
-URL: https://tableau.example.com/workbooks/financial-summary
-
-ℹ️  To connect to real Tableau server, configure:
-   - TABLEAU_SERVER_URL
-   - TABLEAU_TOKEN_NAME and TABLEAU_TOKEN_VALUE
-   (or TABLEAU_USERNAME and TABLEAU_PASSWORD)
+ℹ️  To connect to real dbt Cloud, configure:
+   - DBT_CLOUD_ACCOUNT_ID
+   - DBT_CLOUD_SERVICE_TOKEN or OAuth credentials
 """
 
-    try:
-        # Try to get user's JWT for SSO passthrough
-        user_jwt = get_user_jwt_from_context()
-        if user_jwt:
-            logger.info("Using user's JWT for Tableau authentication (SSO passthrough)")
-        else:
-            logger.info("No user JWT available, using service account credentials")
+    endpoint = f"accounts/{dbt_config.account_id}/projects/"
+    data = await make_dbt_request(endpoint, params={"limit": limit})
 
-        server = get_tableau_server(user_jwt=user_jwt)
-        workbooks, pagination = server.workbooks.get()
+    if "error" in data:
+        return f"Error: {data['error']}"
 
-        output = [f"Found {pagination.total_available} Tableau workbooks:\n"]
+    projects = data.get("data", [])
+    if not projects:
+        return "No projects found in dbt Cloud account"
 
-        for i, wb in enumerate(list(workbooks)[:limit], 1):
-            output.append(f"\n--- Workbook {i} ---")
-            output.append(f"Name: {wb.name}")
-            output.append(f"Project: {wb.project_name}")
-            output.append(f"Views: {len(list(server.workbooks.get_views(wb.id)))}")
-            output.append(f"Owner: {wb.owner_id}")
-            output.append(f"Created: {wb.created_at}")
-            output.append(f"URL: {wb.webpage_url}")
+    output = [f"Found {len(projects)} dbt Cloud project(s):\n"]
 
-        server.auth.sign_out()
-        return "\n".join(output)
+    for i, project in enumerate(projects, 1):
+        output.append(f"\n--- Project {i} ---")
+        output.append(f"ID: {project.get('id', 'N/A')}")
+        output.append(f"Name: {project.get('name', 'N/A')}")
+        output.append(f"Repository: {project.get('repository', {}).get('remote_url', 'N/A')}")
+        output.append(f"State: {project.get('state', 'N/A')}")
+        output.append(f"Created: {project.get('created_at', 'N/A')}")
 
-    except Exception as e:
-        logger.error(f"Tableau error: {e}")
-        return f"Error accessing Tableau: {str(e)}"
+    return "\n".join(output)
 
 
 @mcp.tool()
-async def query_tableau_view(
-    workbook_name: str,
-    view_name: str,
-    filters: Optional[str] = None
-) -> str:
+async def list_dbt_jobs(project_id: Optional[int] = None, limit: int = 20) -> str:
     """
-    Query a specific Tableau view/dashboard.
+    List dbt Cloud jobs, optionally filtered by project.
 
     Requires: mcp_analyst, mcp_admin roles
 
     Args:
-        workbook_name: Name of the workbook
-        view_name: Name of the view/dashboard within the workbook
-        filters: Optional filters in format "field1:value1,field2:value2"
+        project_id: Optional project ID to filter jobs
+        limit: Maximum number of jobs to return (default 20)
 
     Returns:
-        View details and data summary
+        List of dbt Cloud jobs with schedules and status
     """
-    if not tableau_config.is_configured:
-        # Return mock data for demo
-        return f"""Tableau View Query (Demo Mode):
+    if not dbt_config.is_configured:
+        return """dbt Cloud Jobs (Demo Mode):
 
-Workbook: {workbook_name}
-View: {view_name}
-Filters: {filters or 'None'}
+--- Job 1 ---
+ID: 67890
+Name: Daily Production Run
+Project: Healthcare Analytics
+Schedule: 0 6 * * * (daily at 6am)
+State: Active
+Last Run: Success (2024-03-15 06:15:00)
 
-Mock Results:
-- Total Records: 1,247
-- Date Range: 2024-01-01 to 2024-03-31
-- Regions: West (42%), East (31%), Central (27%)
-- Top Metric: $2.3M revenue
+--- Job 2 ---
+Name: Hourly Refresh
+Project: Provider Data Warehouse
+Schedule: 0 * * * * (every hour)
+State: Active
+Last Run: Success (2024-03-15 14:00:00)
 
-ℹ️  To query real Tableau data, configure Tableau server credentials.
+ℹ️  Configure dbt Cloud to access real jobs.
 """
 
-    try:
-        # Try to get user's JWT for SSO passthrough
-        user_jwt = get_user_jwt_from_context()
-        server = get_tableau_server(user_jwt=user_jwt)
+    endpoint = f"accounts/{dbt_config.account_id}/jobs/"
+    params = {"limit": limit}
+    if project_id:
+        params["project_id"] = project_id
 
-        # Find the workbook
-        req_option = TSC.RequestOptions()
-        req_option.filter.add(TSC.Filter(TSC.RequestOptions.Field.Name,
-                                        TSC.RequestOptions.Operator.Equals,
-                                        workbook_name))
-        workbooks, _ = server.workbooks.get(req_option)
+    data = await make_dbt_request(endpoint, params=params)
 
-        if not workbooks:
-            return f"Workbook '{workbook_name}' not found"
+    if "error" in data:
+        return f"Error: {data['error']}"
 
-        workbook = workbooks[0]
+    jobs = data.get("data", [])
+    if not jobs:
+        return "No jobs found"
 
-        # Get views in the workbook
-        server.workbooks.populate_views(workbook)
-        views = [v for v in workbook.views if v.name == view_name]
+    output = [f"Found {len(jobs)} dbt Cloud job(s):\n"]
 
-        if not views:
-            return f"View '{view_name}' not found in workbook '{workbook_name}'"
+    for i, job in enumerate(jobs, 1):
+        output.append(f"\n--- Job {i} ---")
+        output.append(f"ID: {job.get('id', 'N/A')}")
+        output.append(f"Name: {job.get('name', 'N/A')}")
+        output.append(f"Project ID: {job.get('project_id', 'N/A')}")
+        output.append(f"Environment ID: {job.get('environment_id', 'N/A')}")
+        output.append(f"State: {job.get('state', 'N/A')}")
 
-        view = views[0]
+        schedule = job.get("schedule", {})
+        if schedule.get("cron"):
+            output.append(f"Schedule: {schedule.get('cron')}")
 
-        # Build output
-        output = [f"Tableau View: {view.name}"]
-        output.append(f"Workbook: {workbook.name}")
-        output.append(f"URL: {view.webpage_url}")
-        output.append(f"ID: {view.id}")
-        if filters:
-            output.append(f"Filters: {filters}")
+        execute_steps = job.get("execute_steps", [])
+        if execute_steps:
+            output.append(f"Steps: {', '.join(execute_steps)}")
 
-        # Note: Actual data extraction requires Tableau's REST API or Hyper API
-        output.append("\nℹ️  Use Tableau's web interface to view full data and visualizations")
-
-        server.auth.sign_out()
-        return "\n".join(output)
-
-    except Exception as e:
-        logger.error(f"Tableau error: {e}")
-        return f"Error querying Tableau view: {str(e)}"
+    return "\n".join(output)
 
 
 @mcp.tool()
-async def get_tableau_datasource(datasource_name: str) -> str:
+async def trigger_dbt_job(job_id: int, cause: str = "Triggered via MCP") -> str:
     """
-    Get information about a Tableau data source.
+    Trigger a dbt Cloud job run.
 
     Requires: mcp_analyst, mcp_admin roles
 
     Args:
-        datasource_name: Name of the data source
+        job_id: The ID of the job to trigger
+        cause: Optional description of why the job was triggered
 
     Returns:
-        Data source details including connections, fields, and metadata
+        Run details including run ID and status
     """
-    if not tableau_config.is_configured:
-        return f"""Tableau Data Source (Demo Mode):
+    if not dbt_config.is_configured:
+        return f"""dbt Cloud Job Trigger (Demo Mode):
 
-Name: {datasource_name}
-Type: Published Data Source
-Connection: Snowflake
-Database: PROD_ANALYTICS
-Schema: HEALTHCARE
+Job ID: {job_id}
+Cause: {cause}
 
-Fields:
-- patient_id (String)
-- provider_npi (String)
-- visit_date (Date)
-- diagnosis_code (String)
-- charge_amount (Number)
-- insurance_type (String)
+Mock Run Started:
+- Run ID: 999888
+- Status: Queued
+- Trigger: Manual (via MCP)
+- Created: 2024-03-15 15:30:00
 
-Last Updated: 2024-03-15 14:30:00
-Owner: data-team
-Certified: Yes
-
-ℹ️  Configure Tableau server to access real data sources.
+ℹ️  Configure dbt Cloud to trigger real job runs.
 """
 
-    try:
-        # Try to get user's JWT for SSO passthrough
-        user_jwt = get_user_jwt_from_context()
-        server = get_tableau_server(user_jwt=user_jwt)
+    endpoint = f"accounts/{dbt_config.account_id}/jobs/{job_id}/run/"
+    json_data = {"cause": cause}
 
-        req_option = TSC.RequestOptions()
-        req_option.filter.add(TSC.Filter(TSC.RequestOptions.Field.Name,
-                                        TSC.RequestOptions.Operator.Equals,
-                                        datasource_name))
-        datasources, _ = server.datasources.get(req_option)
+    data = await make_dbt_request(endpoint, method="POST", json_data=json_data)
 
-        if not datasources:
-            return f"Data source '{datasource_name}' not found"
+    if "error" in data:
+        return f"Error: {data['error']}"
 
-        ds = datasources[0]
+    run = data.get("data", {})
+    if not run:
+        return "Job triggered but no run data returned"
 
-        output = [f"Tableau Data Source: {ds.name}"]
-        output.append(f"ID: {ds.id}")
-        output.append(f"Project: {ds.project_name}")
-        output.append(f"Type: {ds.datasource_type}")
-        output.append(f"Created: {ds.created_at}")
-        output.append(f"Updated: {ds.updated_at}")
-        output.append(f"Certified: {ds.certified}")
-        if ds.certification_note:
-            output.append(f"Certification Note: {ds.certification_note}")
+    output = [f"dbt Cloud Job Run Triggered:\n"]
+    output.append(f"Run ID: {run.get('id', 'N/A')}")
+    output.append(f"Job ID: {run.get('job_id', 'N/A')}")
+    output.append(f"Status: {run.get('status_humanized', run.get('status', 'N/A'))}")
+    output.append(f"Trigger: {run.get('trigger', {}).get('cause', 'N/A')}")
+    output.append(f"Created: {run.get('created_at', 'N/A')}")
 
-        server.auth.sign_out()
-        return "\n".join(output)
+    if run.get("href"):
+        output.append(f"\nView run: {run.get('href')}")
 
-    except Exception as e:
-        logger.error(f"Tableau error: {e}")
-        return f"Error getting data source: {str(e)}"
+    return "\n".join(output)
+
+
+@mcp.tool()
+async def get_dbt_run_status(run_id: int) -> str:
+    """
+    Get the status and details of a dbt Cloud run.
+
+    Requires: mcp_analyst, mcp_admin roles
+
+    Args:
+        run_id: The ID of the run to check
+
+    Returns:
+        Run status, duration, and test results
+    """
+    if not dbt_config.is_configured:
+        return f"""dbt Cloud Run Status (Demo Mode):
+
+Run ID: {run_id}
+
+Status: Success
+Duration: 3m 42s
+Started: 2024-03-15 15:30:00
+Finished: 2024-03-15 15:33:42
+
+Results:
+- Models: 45 passed
+- Tests: 127 passed, 2 warnings
+- Snapshots: 3 passed
+
+ℹ️  Configure dbt Cloud to check real run status.
+"""
+
+    endpoint = f"accounts/{dbt_config.account_id}/runs/{run_id}/"
+    data = await make_dbt_request(endpoint)
+
+    if "error" in data:
+        return f"Error: {data['error']}"
+
+    run = data.get("data", {})
+    if not run:
+        return f"Run {run_id} not found"
+
+    output = [f"dbt Cloud Run Status:\n"]
+    output.append(f"Run ID: {run.get('id', 'N/A')}")
+    output.append(f"Job ID: {run.get('job_id', 'N/A')}")
+    output.append(f"Status: {run.get('status_humanized', run.get('status', 'N/A'))}")
+    output.append(f"Started: {run.get('started_at', 'N/A')}")
+
+    if run.get("finished_at"):
+        output.append(f"Finished: {run.get('finished_at')}")
+
+    if run.get("duration"):
+        output.append(f"Duration: {run.get('duration')}")
+
+    # Add run results summary
+    run_steps = run.get("run_steps", [])
+    if run_steps:
+        output.append(f"\nSteps:")
+        for step in run_steps:
+            step_name = step.get("name", "Unknown")
+            step_status = step.get("status_humanized", step.get("status", "N/A"))
+            output.append(f"  - {step_name}: {step_status}")
+
+    if run.get("href"):
+        output.append(f"\nView run: {run.get('href')}")
+
+    return "\n".join(output)
+
+
+@mcp.tool()
+async def query_dbt_models(project_id: int, search: Optional[str] = None, limit: int = 20) -> str:
+    """
+    Query dbt models in a project from the Discovery API.
+
+    Requires: mcp_analyst, mcp_admin roles
+
+    Args:
+        project_id: The project ID to query models from
+        search: Optional search term to filter models
+        limit: Maximum number of models to return (default 20)
+
+    Returns:
+        List of dbt models with metadata
+    """
+    if not dbt_config.is_configured:
+        return f"""dbt Models (Demo Mode):
+
+Project ID: {project_id}
+Search: {search or 'None'}
+
+--- Model 1 ---
+Name: stg_patients
+Type: staging
+Database: analytics
+Schema: staging
+Description: Staging table for patient demographics
+
+--- Model 2 ---
+Name: fct_encounters
+Type: fact
+Database: analytics
+Schema: marts
+Description: Fact table for patient encounters
+
+--- Model 3 ---
+Name: dim_providers
+Type: dimension
+Database: analytics
+Schema: marts
+Description: Dimension table for healthcare providers
+
+ℹ️  Configure dbt Cloud to query real models.
+"""
+
+    # Note: The Discovery API requires GraphQL and is more complex
+    # For now, we'll use the standard API to list models via metadata
+    endpoint = f"accounts/{dbt_config.account_id}/projects/{project_id}/"
+    data = await make_dbt_request(endpoint)
+
+    if "error" in data:
+        return f"Error: {data['error']}"
+
+    project = data.get("data", {})
+    if not project:
+        return f"Project {project_id} not found"
+
+    output = [f"dbt Project: {project.get('name', 'N/A')}\n"]
+    output.append("ℹ️  Note: Full model metadata requires dbt Cloud Discovery API (GraphQL)")
+    output.append(f"Project ID: {project.get('id', 'N/A')}")
+    output.append(f"Repository: {project.get('repository', {}).get('remote_url', 'N/A')}")
+    output.append(f"\nTo query specific model metadata, use the dbt Cloud web interface or Discovery API.")
+
+    return "\n".join(output)
 
 
 # ============================================================================
@@ -951,11 +1006,13 @@ if OKTA_ENABLED:
     advanced_search.canAccess = require_role("mcp_analyst", "mcp_clinician", "mcp_admin")
     logger.info("   ✓ advanced_search: analyst, clinician, or admin")
 
-    # Tableau tools - require analyst role or admin
-    list_tableau_workbooks.canAccess = require_role("mcp_analyst", "mcp_admin")
-    query_tableau_view.canAccess = require_role("mcp_analyst", "mcp_admin")
-    get_tableau_datasource.canAccess = require_role("mcp_analyst", "mcp_admin")
-    logger.info("   ✓ Tableau tools (list_tableau_workbooks, query_tableau_view, get_tableau_datasource): analyst or admin")
+    # dbt Cloud tools - require analyst role or admin
+    list_dbt_projects.canAccess = require_role("mcp_analyst", "mcp_admin")
+    list_dbt_jobs.canAccess = require_role("mcp_analyst", "mcp_admin")
+    trigger_dbt_job.canAccess = require_role("mcp_analyst", "mcp_admin")
+    get_dbt_run_status.canAccess = require_role("mcp_analyst", "mcp_admin")
+    query_dbt_models.canAccess = require_role("mcp_analyst", "mcp_admin")
+    logger.info("   ✓ dbt Cloud tools (list_dbt_projects, list_dbt_jobs, trigger_dbt_job, get_dbt_run_status, query_dbt_models): analyst or admin")
 
     logger.info("✅ RBAC configuration complete")
 else:

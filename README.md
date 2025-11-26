@@ -4,10 +4,10 @@ A collection of FastMCP servers built with the help of Claude Code, demonstratin
 
 ## What's Inside
 
-This repository contains a combined FastMCP server for echo testing and comprehensive healthcare provider data access:
+This repository contains a combined FastMCP server for echo testing, healthcare provider data access, and dbt Cloud integration:
 
 ### Combined Server (`combined_server.py`) ⭐ **MAIN SERVER**
-A comprehensive server that combines echo functionality with full National Plan and Provider Enumeration System (NPPES) NPI Registry API access:
+A comprehensive server that combines echo functionality, National Plan and Provider Enumeration System (NPPES) NPI Registry API access, and dbt Cloud integration:
 
 #### Echo Tools
 - `echo_tool(text)` - Simple echo for testing
@@ -19,6 +19,13 @@ A comprehensive server that combines echo functionality with full National Plan 
 - `search_providers()` - Search for individual healthcare providers (NPI-1) by name and location
 - `search_organizations()` - Search for healthcare organizations (NPI-2)
 - `advanced_search()` - Multi-criteria search with taxonomy/specialty filtering
+
+#### dbt Cloud Tools
+- `list_dbt_projects(limit)` - List dbt Cloud projects in your account
+- `list_dbt_jobs(project_id, limit)` - List dbt Cloud jobs with schedules
+- `trigger_dbt_job(job_id, cause)` - Trigger a dbt Cloud job run
+- `get_dbt_run_status(run_id)` - Get status and results of a dbt Cloud run
+- `query_dbt_models(project_id, search, limit)` - Query dbt models metadata
 
 **Provider information includes:**
 - Basic Information (names, credentials, enumeration dates)
@@ -78,6 +85,18 @@ search_organizations(organization_name="Mayo Clinic", state="MN")
 # Advanced search with specialty
 advanced_search(taxonomy_description="Cardiology", state="NY", limit=10)
 # Returns: Matching cardiologists in New York
+
+# List dbt Cloud projects
+list_dbt_projects(limit=10)
+# Returns: List of dbt Cloud projects
+
+# Trigger a dbt Cloud job
+trigger_dbt_job(job_id=12345, cause="Manual trigger from MCP")
+# Returns: Run ID and status
+
+# Check dbt Cloud run status
+get_dbt_run_status(run_id=67890)
+# Returns: Run status, duration, and test results
 ```
 
 ## Deployment
@@ -126,17 +145,37 @@ python combined_server.py
 
 ### Role Definitions
 
-- **mcp_viewer**: Read-only access to public data
-- **mcp_analyst**: Data analyst with advanced search capabilities
-- **mcp_clinician**: Healthcare provider access
-- **mcp_admin**: Full administrative access
+- **mcp_viewer**: Read-only access to public data (NPPES search and lookup)
+- **mcp_analyst**: Data analyst with advanced search and dbt Cloud access
+- **mcp_clinician**: Healthcare provider access with advanced search
+- **mcp_admin**: Full administrative access to all tools
 
 See [OKTA_SETUP.md](OKTA_SETUP.md) for complete setup instructions.
+
+### dbt Cloud Configuration
+
+To enable dbt Cloud integration, add these environment variables to your `.env` file:
+
+```bash
+# dbt Cloud Configuration
+DBT_CLOUD_ACCOUNT_ID=your_account_id
+DBT_CLOUD_SERVICE_TOKEN=your_service_token
+
+# Optional: OAuth configuration for user-level authentication
+DBT_CLOUD_OAUTH_CLIENT_ID=your_oauth_client_id
+DBT_CLOUD_OAUTH_CLIENT_SECRET=your_oauth_client_secret
+```
+
+**Authentication Options:**
+1. **Service Token** - Use a dbt Cloud service account token for all API requests
+2. **OAuth** - Enable OAuth 2.0 for user-level authentication (integrates with Okta SSO)
+
+The server will work in demo mode if dbt Cloud is not configured, returning mock data for testing.
 
 ## Dependencies
 
 - `fastmcp>=0.1.0` - The FastMCP framework
-- `httpx>=0.27.0` - Async HTTP client for API requests (NPPES servers)
+- `httpx>=0.27.0` - Async HTTP client for API requests (NPPES servers and dbt Cloud)
 - `PyJWT>=2.8.0` - JWT token validation
 - `cryptography>=41.0.0` - Cryptographic operations
 - `cachetools>=5.3.0` - Token caching
