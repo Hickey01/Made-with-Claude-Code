@@ -205,6 +205,28 @@ def echo_tool(text: str) -> str:
     return text
 
 
+@mcp.tool
+def snowflake_diagnostics() -> str:
+    """Diagnostic tool to check Snowflake OAuth configuration."""
+    import os
+    lines = ["=== Snowflake Diagnostics ==="]
+    lines.append("SNOWFLAKE_AVAILABLE: " + str(SNOWFLAKE_AVAILABLE))
+    lines.append("OAUTH_ENABLED env: " + str(os.getenv("SNOWFLAKE_OAUTH_ENABLED", "NOT SET")))
+    lines.append("ACCOUNT env: " + str(os.getenv("SNOWFLAKE_ACCOUNT", "NOT SET")))
+    lines.append("oauth_enabled: " + str(snowflake_config.oauth_enabled))
+    lines.append("is_oauth_mode: " + str(snowflake_config.is_oauth_mode))
+    lines.append("is_configured: " + str(snowflake_config.is_configured))
+    if snowflake_config.is_oauth_mode:
+        lines.append("Status: OAuth ACTIVE")
+    elif not SNOWFLAKE_AVAILABLE:
+        lines.append("Status: DEMO - snowflake package missing")
+    else:
+        lines.append("Status: DEMO MODE")
+    sep = chr(10)
+    return sep.join(lines)
+
+
+
 @mcp.resource("echo://static")
 def echo_resource() -> str:
     """Static echo resource"""
@@ -221,6 +243,28 @@ def echo_template(text: str) -> str:
 def echo_prompt(text: str) -> str:
     """Echo prompt that returns the input text"""
     return text
+
+
+@mcp.tool
+def snowflake_diagnostics() -> str:
+    """Diagnostic tool to check Snowflake OAuth configuration."""
+    import os
+    lines = ["=== Snowflake Diagnostics ==="]
+    lines.append("SNOWFLAKE_AVAILABLE: " + str(SNOWFLAKE_AVAILABLE))
+    lines.append("OAUTH_ENABLED env: " + str(os.getenv("SNOWFLAKE_OAUTH_ENABLED", "NOT SET")))
+    lines.append("ACCOUNT env: " + str(os.getenv("SNOWFLAKE_ACCOUNT", "NOT SET")))
+    lines.append("oauth_enabled: " + str(snowflake_config.oauth_enabled))
+    lines.append("is_oauth_mode: " + str(snowflake_config.is_oauth_mode))
+    lines.append("is_configured: " + str(snowflake_config.is_configured))
+    if snowflake_config.is_oauth_mode:
+        lines.append("Status: OAuth ACTIVE")
+    elif not SNOWFLAKE_AVAILABLE:
+        lines.append("Status: DEMO - snowflake package missing")
+    else:
+        lines.append("Status: DEMO MODE")
+    sep = chr(10)
+    return sep.join(lines)
+
 
 
 # ============================================================================
