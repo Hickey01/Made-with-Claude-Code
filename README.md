@@ -126,6 +126,18 @@ This server is ready for deployment to FastMCP Cloud:
 4. Set entry point to: `combined_server.py` or `combined_server:mcp`
 5. Deploy!
 
+### Windows Users: Troubleshooting Connection Issues
+
+If you're using Claude Desktop on Windows and experiencing connection issues with your FastMCP Cloud server, see our comprehensive troubleshooting guide:
+
+**[Windows FastMCP Troubleshooting Guide](WINDOWS_FASTMCP_TROUBLESHOOTING.md)**
+
+This guide addresses:
+- The `coordinateAuth` OAuth callback port bug
+- "Cannot read properties of null (reading 'port')" errors
+- Configuration best practices for Windows
+- Step-by-step workarounds and solutions
+
 ## Security & Authentication
 
 This server supports **Okta OAuth 2.0 authentication** with role-based access control (RBAC).
