@@ -18,7 +18,7 @@ import os
 import time
 import logging
 from typing import Optional, Dict, Any, List, Callable
-from fastmcp import FastMCP
+from fastmcp import FastMCP, Context
 import httpx
 
 # Load environment variables (optional - uses system env if not available)
@@ -922,32 +922,85 @@ class SnowflakeConfig:
         self.database = os.getenv('SNOWFLAKE_DATABASE')
         self.schema = os.getenv('SNOWFLAKE_SCHEMA', 'PUBLIC')
         self.role = os.getenv('SNOWFLAKE_ROLE')
-        self.authenticator = os.getenv('SNOWFLAKE_AUTHENTICATOR')  # e.g., 'externalbrowser' for SSO
+        self.authenticator = os.getenv('SNOWFLAKE_AUTHENTICATOR')  # e.g., 'externalbrowser' for SSO, 'oauth' for Okta
         self.private_key_path = os.getenv('SNOWFLAKE_PRIVATE_KEY_PATH')
+        # OAuth-specific configuration for Okta token passthrough
+        self.oauth_enabled = os.getenv('SNOWFLAKE_OAUTH_ENABLED', 'false').lower() == 'true'
 
     @property
     def is_configured(self) -> bool:
         """Check if Snowflake is properly configured."""
-        has_account = bool(self.account and self.user)
+        has_account = bool(self.account)
+        # For OAuth mode, we don't need a static user - it comes from the token
+        if self.oauth_enabled:
+            return has_account and SNOWFLAKE_AVAILABLE
+        # For non-OAuth modes, we need user and some form of auth
+        has_user = bool(self.user)
         has_auth = bool(
             self.password or
             self.authenticator == 'externalbrowser' or
             self.private_key_path
         )
-        return has_account and has_auth and SNOWFLAKE_AVAILABLE
+        return has_account and has_user and has_auth and SNOWFLAKE_AVAILABLE
+
+    @property
+    def is_oauth_mode(self) -> bool:
+        """Check if running in OAuth passthrough mode."""
+        return self.oauth_enabled and SNOWFLAKE_AVAILABLE
 
 
 # Global Snowflake config
 snowflake_config = SnowflakeConfig()
 
+# Thread-local storage for OAuth token (set by tools before calling get_snowflake_connection)
+import threading
+_snowflake_oauth_token = threading.local()
 
-def get_snowflake_connection():
+
+def set_snowflake_oauth_token(token: str):
+    """Set the OAuth token for the current thread/request."""
+    _snowflake_oauth_token.value = token
+
+
+def get_snowflake_oauth_token():
+    """Get the OAuth token for the current thread/request."""
+    return getattr(_snowflake_oauth_token, 'value', None)
+
+
+def get_snowflake_connection(oauth_token: str = None):
     """
     Get Snowflake connection with configured authentication.
+
+    Args:
+        oauth_token: Optional OAuth access token for Okta SSO authentication.
+                    Required when SNOWFLAKE_OAUTH_ENABLED=true.
+                    If not provided, will check thread-local storage.
 
     Returns:
         Snowflake connection object
     """
+    # OAuth mode - use the passed token or thread-local token
+    if snowflake_config.is_oauth_mode:
+        token = oauth_token or get_snowflake_oauth_token()
+        if not token:
+            raise Exception("OAuth mode enabled but no token provided. Ensure user is authenticated via Okta.")
+
+        conn_params = {
+            'account': snowflake_config.account,
+            'authenticator': 'oauth',
+            'token': token,
+            'warehouse': snowflake_config.warehouse,
+            'database': snowflake_config.database,
+            'schema': snowflake_config.schema,
+        }
+
+        if snowflake_config.role:
+            conn_params['role'] = snowflake_config.role
+
+        logger.debug(f"Connecting to Snowflake via OAuth (account: {snowflake_config.account})")
+        return snowflake.connector.connect(**conn_params)
+
+    # Non-OAuth modes
     if not snowflake_config.is_configured:
         raise Exception("Snowflake not configured. Set SNOWFLAKE_ACCOUNT, SNOWFLAKE_USER, and authentication credentials.")
 
@@ -987,8 +1040,63 @@ def get_snowflake_connection():
     return snowflake.connector.connect(**conn_params)
 
 
+def extract_oauth_token_from_context(ctx: Context) -> str:
+    """
+    Extract OAuth token from FastMCP context.
+    
+    The token can come from:
+    1. The Authorization header (Bearer token)
+    2. The validated JWT claims in auth_info
+    
+    Args:
+        ctx: FastMCP Context object
+        
+    Returns:
+        OAuth access token string or None
+    """
+    if ctx is None:
+        return None
+    
+    # Try to get the raw token from request headers
+    # FastMCP stores the original token in the context
+    try:
+        # Check if there's a request object with headers
+        if hasattr(ctx, 'request') and ctx.request:
+            auth_header = ctx.request.headers.get('Authorization', '')
+            if auth_header.startswith('Bearer '):
+                return auth_header[7:]  # Remove 'Bearer ' prefix
+        
+        # Check for token in auth_info (some FastMCP versions store it here)
+        if hasattr(ctx, 'auth_info') and ctx.auth_info:
+            if isinstance(ctx.auth_info, dict) and 'token' in ctx.auth_info:
+                return ctx.auth_info['token']
+                
+    except Exception as e:
+        logger.debug(f"Could not extract OAuth token from context: {e}")
+    
+    return None
+
+
+def get_snowflake_connection_with_context(ctx: Context = None):
+    """
+    Get Snowflake connection, automatically extracting OAuth token from context if in OAuth mode.
+    
+    Args:
+        ctx: Optional FastMCP Context for OAuth token extraction
+        
+    Returns:
+        Snowflake connection object
+    """
+    if snowflake_config.is_oauth_mode and ctx:
+        token = extract_oauth_token_from_context(ctx)
+        if token:
+            return get_snowflake_connection(oauth_token=token)
+    
+    return get_snowflake_connection()
+
+
 @mcp.tool()
-async def execute_snowflake_query(query: str, limit: int = 100) -> str:
+async def execute_snowflake_query(query: str, limit: int = 100, ctx: Context = None) -> str:
     """
     Execute a SQL query on Snowflake.
 
@@ -997,11 +1105,12 @@ async def execute_snowflake_query(query: str, limit: int = 100) -> str:
     Args:
         query: SQL query to execute
         limit: Maximum number of rows to return (default 100)
+        ctx: FastMCP context (injected automatically)
 
     Returns:
         Query results formatted as a table
     """
-    if not snowflake_config.is_configured:
+    if not snowflake_config.is_configured and not snowflake_config.is_oauth_mode:
         return f"""Snowflake Query (Demo Mode):
 
 Query: {query}
@@ -1023,7 +1132,7 @@ Mock Results:
 """
 
     try:
-        conn = get_snowflake_connection()
+        conn = get_snowflake_connection_with_context(ctx)
         cursor = conn.cursor(DictCursor)
 
         # Add limit to query if not already present
@@ -1061,16 +1170,19 @@ Mock Results:
 
 
 @mcp.tool()
-async def list_snowflake_databases() -> str:
+async def list_snowflake_databases(ctx: Context = None) -> str:
     """
     List databases in Snowflake account.
 
     Requires: mcp_analyst, mcp_admin roles
 
+    Args:
+        ctx: FastMCP context (injected automatically)
+
     Returns:
         List of databases with details
     """
-    if not snowflake_config.is_configured:
+    if not snowflake_config.is_configured and not snowflake_config.is_oauth_mode:
         return """Snowflake Databases (Demo Mode):
 
 --- Database 1 ---
@@ -1095,7 +1207,7 @@ Size: 89 GB
 """
 
     try:
-        conn = get_snowflake_connection()
+        conn = get_snowflake_connection_with_context(ctx)
         cursor = conn.cursor(DictCursor)
 
         cursor.execute("SHOW DATABASES")
@@ -1121,7 +1233,7 @@ Size: 89 GB
 
 
 @mcp.tool()
-async def list_snowflake_schemas(database: Optional[str] = None) -> str:
+async def list_snowflake_schemas(database: Optional[str] = None, ctx: Context = None) -> str:
     """
     List schemas in a Snowflake database.
 
@@ -1129,11 +1241,12 @@ async def list_snowflake_schemas(database: Optional[str] = None) -> str:
 
     Args:
         database: Database name (uses configured database if not specified)
+        ctx: FastMCP context (injected automatically)
 
     Returns:
         List of schemas
     """
-    if not snowflake_config.is_configured:
+    if not snowflake_config.is_configured and not snowflake_config.is_oauth_mode:
         return f"""Snowflake Schemas (Demo Mode):
 
 Database: {database or 'HEALTHCARE_DATA'}
@@ -1157,7 +1270,7 @@ Tables: 67
 """
 
     try:
-        conn = get_snowflake_connection()
+        conn = get_snowflake_connection_with_context(ctx)
         cursor = conn.cursor(DictCursor)
 
         if database:
@@ -1187,7 +1300,7 @@ Tables: 67
 
 
 @mcp.tool()
-async def list_snowflake_tables(schema: Optional[str] = None, database: Optional[str] = None) -> str:
+async def list_snowflake_tables(schema: Optional[str] = None, database: Optional[str] = None, ctx: Context = None) -> str:
     """
     List tables in a Snowflake schema.
 
@@ -1196,11 +1309,12 @@ async def list_snowflake_tables(schema: Optional[str] = None, database: Optional
     Args:
         schema: Schema name (uses configured schema if not specified)
         database: Database name (uses configured database if not specified)
+        ctx: FastMCP context (injected automatically)
 
     Returns:
         List of tables with row counts
     """
-    if not snowflake_config.is_configured:
+    if not snowflake_config.is_configured and not snowflake_config.is_oauth_mode:
         return f"""Snowflake Tables (Demo Mode):
 
 Database: {database or 'HEALTHCARE_DATA'}
@@ -1228,7 +1342,7 @@ Size: 2.1 GB
 """
 
     try:
-        conn = get_snowflake_connection()
+        conn = get_snowflake_connection_with_context(ctx)
         cursor = conn.cursor(DictCursor)
 
         if database and schema:
@@ -1263,7 +1377,7 @@ Size: 2.1 GB
 
 
 @mcp.tool()
-async def describe_snowflake_table(table_name: str, schema: Optional[str] = None, database: Optional[str] = None) -> str:
+async def describe_snowflake_table(table_name: str, schema: Optional[str] = None, database: Optional[str] = None, ctx: Context = None) -> str:
     """
     Describe the structure of a Snowflake table.
 
@@ -1273,11 +1387,12 @@ async def describe_snowflake_table(table_name: str, schema: Optional[str] = None
         table_name: Name of the table
         schema: Schema name (uses configured schema if not specified)
         database: Database name (uses configured database if not specified)
+        ctx: FastMCP context (injected automatically)
 
     Returns:
         Table structure with column details
     """
-    if not snowflake_config.is_configured:
+    if not snowflake_config.is_configured and not snowflake_config.is_oauth_mode:
         return f"""Table Structure (Demo Mode):
 
 Table: {table_name}
@@ -1299,7 +1414,7 @@ Columns:
 """
 
     try:
-        conn = get_snowflake_connection()
+        conn = get_snowflake_connection_with_context(ctx)
         cursor = conn.cursor(DictCursor)
 
         # Build fully qualified table name
@@ -1336,16 +1451,19 @@ Columns:
 
 
 @mcp.tool()
-async def list_snowflake_warehouses() -> str:
+async def list_snowflake_warehouses(ctx: Context = None) -> str:
     """
     List Snowflake warehouses.
 
     Requires: mcp_analyst, mcp_admin roles
 
+    Args:
+        ctx: FastMCP context (injected automatically)
+
     Returns:
         List of warehouses with status and size
     """
-    if not snowflake_config.is_configured:
+    if not snowflake_config.is_configured and not snowflake_config.is_oauth_mode:
         return """Snowflake Warehouses (Demo Mode):
 
 --- Warehouse 1 ---
@@ -1370,7 +1488,7 @@ Auto-suspend: 120s
 """
 
     try:
-        conn = get_snowflake_connection()
+        conn = get_snowflake_connection_with_context(ctx)
         cursor = conn.cursor(DictCursor)
 
         cursor.execute("SHOW WAREHOUSES")
